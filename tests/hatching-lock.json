@@ -1,9 +1,9 @@
 {
-  "note": "Approved pencil and engraving kernels. Changes require an intentional appearance review.",
+  "note": "Approved pencil and engraving kernels. Changes require an intentional appearance review. Readability pass: 32 WebGL views byte-identical to 30c7300e06e4a5daba607f6458a5a93da6912086; HLSL remains an uncompiled reference.",
   "sha256": {
-    "src/shaders/PencilHatching.glsl": "8a0603b70bed967eff74af838c1584439af869442c064b80f2272e2125f7e4b3",
-    "reference/hlsl/PencilHatching.hlsl": "a5beae99290d9709c11342c4874c509527d0114f86f69b401c9a063ae51a62db",
-    "src/shaders/FractalHatching.glsl": "4a2a28105777c996844b737d35c3a701fc5fec1c5974ffbfe4e65fdcab6a4100",
-    "reference/hlsl/FractalHatching.hlsl": "a44ab643791e0a63e4c811986bbc1673aba5493136e95d24918d94b5209f5467"
+    "src/shaders/PencilHatching.glsl": "0c939ecae20fceebe0018a677e988e957773a9b7504280d50e954e3249256a80",
+    "reference/hlsl/PencilHatching.hlsl": "ed4ceaea31ed5c7541c62495b669086a3811bf48a620c758be14e1125fbe9c36",
+    "src/shaders/FractalHatching.glsl": "c065472f2aa4db06b47da4a87105e1e53e7b9ca0e43619e9f2052f60b517cea9",
+    "reference/hlsl/FractalHatching.hlsl": "3f887f8b07edf09c4c38b3dcd7afcab795465824c895394a0a793fce4469aad7"
   }
 }

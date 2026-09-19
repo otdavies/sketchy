@@ -112,21 +112,6 @@ function createPencilCity(
     return p;
   }
   const vertices = geometry || buildPencilCityGeometry(extended);
-  // Identical transform in color, metadata and depth passes. Each car takes the
-  // outer lane of the same rectangular route; no per-frame mesh uploads.
-  const trafficTransform = `
-uniform float trafficTime;
-void vehicle(inout vec3 p,inout vec3 n,inout float m){
- if(m<16.)return;
- float id=floor((m-16.)/8.);m=mod(m,8.);
- float s=mod(trafficTime*.72+id*8.24,32.96);
- vec2 center,axis;
- if(s<8.84){center=vec2(-4.42+s,-3.82);axis=vec2(1,0);}
- else if(s<16.48){center=vec2(4.42,-3.82+(s-8.84));axis=vec2(0,1);}
- else if(s<25.32){center=vec2(4.42-(s-16.48),3.82);axis=vec2(-1,0);}
- else{center=vec2(-4.42,3.82-(s-25.32));axis=vec2(0,-1);}
- mat2 turn=mat2(axis,vec2(-axis.y,axis.x));p.xz=turn*p.xz+center;n.xz=turn*n.xz;
-}`;
   function vao(data, stride, attributes) {
     let v = gl.createVertexArray();
     gl.bindVertexArray(v);
@@ -183,104 +168,24 @@ void vehicle(inout vec3 p,inout vec3 n,inout float m){
       ]),
     }));
   let groundBounds = null;
-  const vertex = `#version 300 es
-precision highp float;
-layout(location=0)in vec3 position;layout(location=1)in vec3 normal;layout(location=2)in float material;
-uniform mat4 viewProjection,lightProjection;
-out vec3 p,n;out vec4 shadowPos;flat out float mat,planeDistance;
-invariant gl_Position;
-${trafficTransform}
-void main(){p=position;n=normal;mat=material;vehicle(p,n,mat);planeDistance=dot(n,p);shadowPos=lightProjection*vec4(p,1);gl_Position=viewProjection*vec4(p,1);}`;
-  // All camera passes use exactly the same vertex transform and geometry.
-  const depth = program(
-    vertex,
-    `#version 300 es
-precision highp float;void main(){}`,
+  // Shader text comes from src/shaders/. build.py resolves its includes once;
+  // the caller supplies the pencil kernel used by both the demo and fixtures.
+  const withPencil = source => source.replace("// PENCIL_CORE_INSERT", pencilCore);
+  const vertex = CITY_SHADERS.vertex;
+  const depth = program(vertex, CITY_SHADERS.depth);
+  const shadowDepth = program(CITY_SHADERS.shadowVertex, CITY_SHADERS.depth);
+  const fillSource = withPencil(CITY_SHADERS.fill);
+  const paperProgram = program(vertex, withPencil(CITY_SHADERS.paper));
+  const rawProgram = program(vertex, CITY_SHADERS.raw);
+  const metadataProgram = program(vertex, CITY_SHADERS.metadata);
+  const fullscreen = CITY_SHADERS.fullscreen;
+  const detect = program(fullscreen, edgeSource);
+  const composite = program(fullscreen, compositeSource);
+  // The same source has explicit fitting and composition entry points.
+  const fitSource = compositeSource.replace(
+    "precision highp float;",
+    "precision highp float;\n#define OUTLINE_FIT_PASS",
   );
-  // Conventional depth-only light pass. Hardware owns depth interpolation and
-  // storage; polygon offset supplies a bounded rasterization margin.
-  const shadowDepth = program(
-    `#version 300 es
-precision highp float;
-layout(location=0)in vec3 position;layout(location=1)in vec3 normal;layout(location=2)in float material;
-uniform mat4 lightProjection;
-${trafficTransform}
-void main(){vec3 p=position,n=normal;float m=material;vehicle(p,n,m);gl_Position=lightProjection*vec4(p,1);}
-`,
-    `#version 300 es
-precision highp float;void main(){}`,
-  );
-  const fillSource = `#version 300 es
-precision highp float;
-in vec3 p,n;in vec4 shadowPos;flat in float mat,planeDistance;layout(location=0)out vec4 color;layout(location=1)out vec4 meta;
-uniform int fastSampling;uniform float drawing;uniform int method;
-${CITY_SURFACE_GLSL}
-${CITY_LIGHTING_GLSL}
-${pencilCore}
-
-void main(){
- vec3 dx,dy;
- vec3 surface=citySurfacePoint(n,planeDistance,dx,dy);
- float visible=cityShadowVisibility(lightProjection*vec4(surface,1),n);
- float tone=cityPencilTone(n,visible,mat);
- float tooth=pnHash(floor(gl_FragCoord.xy/sampleScale));
- vec3 paper=vec3(.984,.978,.958)*(.978+.022*tooth);
- if(mat>3.5)paper*=.96;
- meta=vec4(n*.5+.5,mat*.25);
- // Exit the FRAGMENT entry point, not only the nested hatch helper. This makes
- // complete paper quads cheap even on backends that flatten helper branches.
- if(tone<=0.){color=vec4(paper,1);return;}
- // Roofs share paper highlights; no decorative ink on fully lit surfaces.
- // Two symmetric samples preserve the fine graphite coverage. Geometry uses
- // native MSAA; outlines retain the original independent 2x metadata samples.
- vec3 offset=fastSampling==1?.25*(dx+dy):vec3(0.);
- float ink=pnPencil(surface-offset,n,dx,dy,tone,drawing);
- if(fastSampling==1)ink=.5*(ink+pnPencil(surface+offset,n,dx,dy,tone,drawing));
- if(method>0){vec2 uv=abs(n.y)>.8?surface.xz:(abs(n.x)>.7?surface.zy:surface.xy);float ph=dot(uv,vec2(1,.6));vec2 ux=abs(n.y)>.8?dx.xz:(abs(n.x)>.7?dx.zy:dx.xy),uy=abs(n.y)>.8?dy.xz:(abs(n.x)>.7?dy.zy:dy.xy);vec2 g=vec2(dot(ux,vec2(1,.6)),dot(uy,vec2(1,.6)));ink=method==1?fhFamilyState(ph,g,g,tone,7.):fhStripe(ph*32.,tone,(abs(g.x)+abs(g.y))*32.);}
- float fibre=pnNoise(gl_FragCoord.xy/sampleScale*vec2(.13,.87));
- ink*=mix(clamp(.80+.27*tooth+.13*fibre,0.,1.),1.,pow(ink,3.));
- if(mat>2.5)ink*=1.-smoothstep(4.8,7.8,length(surface.xz));
- color=vec4(mix(paper,vec3(.125,.119,.115),ink),1);meta=vec4(n*.5+.5,mat*.25);
-}`;
-  const paperProgram = program(
-    vertex,
-    `#version 300 es
-precision highp float;in vec3 n;flat in float mat;uniform float sampleScale;layout(location=0)out vec4 color;layout(location=1)out vec4 meta;
-${pencilCore}
-void main(){float tooth=pnHash(floor(gl_FragCoord.xy/sampleScale));color=vec4(vec3(.984,.978,.958)*(.978+.022*tooth),1);meta=vec4(n*.5+.5,mat*.25);}`,
-  );
-  // A separate program: no pencil kernel, tone curve, grain, or material color.
-  const rawProgram = program(
-    vertex,
-    `#version 300 es
-precision highp float;in vec3 n;flat in float planeDistance;out vec4 color;uniform int debugView;
-${CITY_SURFACE_GLSL}
-${CITY_LIGHTING_GLSL}
-void main(){
- if(debugView==2){color=vec4(vec3(max(dot(n,lightDirection),0.)),1);return;}
- vec3 dx,dy;vec3 surface=citySurfacePoint(n,planeDistance,dx,dy);
- color=vec4(vec3(cityShadowVisibility(lightProjection*vec4(surface,1),n)),1);
-}`,
-  );
-  const metadataProgram = program(
-    vertex,
-    `#version 300 es
-precision highp float;in vec3 n;flat in float mat;layout(location=1)out vec4 meta;
-void main(){meta=vec4(n*.5+.5,mat*.25);}`,
-  );
-  const fullscreen = `#version 300 es
-void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.-1.,0,1);}`;
-  const detect = program(fullscreen, edgeSource),
-    composite = program(fullscreen, compositeSource);
-  const fitSource = compositeSource
-    .replace(
-      "precision highp float;",
-      "precision highp float;\n#define OUTLINE_FIT_PASS",
-    )
-    .replace(
-      /void main\(\)\{[\s\S]*$/,
-      "void main(){color=poFitAtSeed(ivec2(gl_FragCoord.xy));}",
-    );
   const fitProgram = program(fullscreen, fitSource);
   const locations = (p) =>
     Object.fromEntries(

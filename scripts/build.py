@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse
 import json
 import shutil
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 SHADERS = ROOT / "src/shaders"
@@ -13,15 +14,38 @@ def read(path):
     return path.read_text(encoding="utf-8")
 
 
+def shader_source(filename, stack=()):
+    """Resolve local GLSL includes without a runtime loader or network requests."""
+    if filename in stack:
+        raise ValueError(f"Cyclic shader include: {stack + (filename,)}")
+    source = read(SHADERS / filename)
+    return re.sub(
+        r'^#include "([A-Za-z0-9_.-]+)"$',
+        lambda match: shader_source(match[1], stack + (filename,)),
+        source,
+        flags=re.MULTILINE,
+    )
+
+
 def build():
     core = read(SHADERS / "FractalHatching.glsl") + "\n" + read(SHADERS / "PencilHatching.glsl")
     scene = read(SHADERS / "scene.frag").replace("// CORE_INSERT", core)
     composite = read(SHADERS / "outline-composite.frag").replace("// CORE_INSERT", core)
     composite = composite.replace("// OUTLINE_CORE_INSERT", read(SHADERS / "PencilOutline.glsl"))
-    modules = "\n".join(
-        "const " + name + "=" + json.dumps(read(SHADERS / file)) + ";"
-        for name, file in [("CITY_LIGHTING_GLSL", "CityLighting.glsl"), ("CITY_SURFACE_GLSL", "CitySurface.glsl")]
-    )
+    city_sources = {
+        name: shader_source(filename)
+        for name, filename in {
+            "vertex": "city.vert",
+            "shadowVertex": "city-shadow.vert",
+            "depth": "depth-only.frag",
+            "fill": "city-fill.frag",
+            "paper": "city-paper.frag",
+            "raw": "city-raw.frag",
+            "metadata": "city-metadata.frag",
+            "fullscreen": "fullscreen.vert",
+        }.items()
+    }
+    modules = "const CITY_SHADERS = " + json.dumps(city_sources) + ";"
     javascript = "\n".join([read(WEB / "city-geometry.js"), modules, read(WEB / "city-renderer.js"), read(WEB / "first-person.js"), read(WEB / "demo.js")])
     fragment = read(WEB / "studio.html")
     for token, value in {

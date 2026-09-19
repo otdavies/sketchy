@@ -154,311 +154,483 @@ uniform bool flow;
 uniform vec3 paper;
 uniform vec3 pen;
 
-// The build step inserts FractalHatching.glsl here.
+// Shared pencil and engraving kernels, inserted by the build.
 // Analytic nested hatching research prototype, 2026. SPDX-License-Identifier: MIT
 // Conceptual lineage: Rune Skovbo Johansen's Surface-Stable Fractal Dithering
 // and Praun et al., Real-Time Hatching (2001). Independently written code.
 
-// Antiderivative of a unit-period stripe of full width w, centered on integers.
-float fhIntegral(float x, float w) {
-    float q = x + 0.5 * w;
-    return floor(q) * w + min(fract(q), w);
+// Antiderivative of a unit-period stripe of full width stripeWidth, centered on integers.
+float fhIntegral(float phase, float stripeWidth) {
+    float shiftedPhase = phase + 0.5 * stripeWidth;
+    return floor(shiftedPhase) * stripeWidth + min(fract(shiftedPhase), stripeWidth);
 }
 
 // Exact integral for a 1D box footprint; approximation to a 2D pixel filter.
 // Reducing phase BEFORE the integral avoids subtracting two large integrals.
 float fhStripe(float phase, float width, float footprint) {
-    float x = fract(phase);
-    float w = clamp(width, 0.0, 1.0);
-    float p = max(footprint, 1e-6);
-    return clamp((fhIntegral(x + p * 0.5, w)
-                - fhIntegral(x - p * 0.5, w)) / p, 0.0, 1.0);
+    float wrappedPhase = fract(phase);
+    float stripeWidth = clamp(width, 0.0, 1.0);
+    float pixelFootprint = max(footprint, 1e-6);
+    return clamp((fhIntegral(wrappedPhase + pixelFootprint * 0.5, stripeWidth) -
+                  fhIntegral(wrappedPhase - pixelFootprint * 0.5, stripeWidth)) /
+                     pixelFootprint,
+                 0.0, 1.0);
 }
 
 // phase is a continuous, SURFACE-ATTACHED scalar. Derivatives must be taken
 // BEFORE floor/fract/LOD selection, in uniform fragment control flow.
-// gapPx is measured in render-target pixels. ink is desired area coverage.
-float fhFamilyState(float phase, vec2 gradient, vec2 stateGradient, float ink, float gapPx) {
-    float g = max(length(stateGradient), 1e-10);
-    float lod = clamp(-log2(max(gapPx, 2.0) * g), -20.0, 20.0);
-    float level = floor(lod);
-    float subdivision = exp2(fract(lod));
-    float birth = subdivision - 1.0;
-    float frequency = exp2(level);
-    float u = phase * frequency;
-    float footprint = max((abs(gradient.x) + abs(gradient.y)) * frequency, 1e-6);
-    float parentWidth = clamp(ink, 0.0, 1.0) / subdivision;
-    float childWidth = parentWidth * birth;
-    return clamp(fhStripe(u, parentWidth, footprint)
-               + fhStripe(u - 0.5, childWidth, footprint), 0.0, 1.0);
+// spacingPixels is measured in output pixels. inkCoverage is desired area coverage.
+float fhFamilyState(float phase, vec2 phaseGradient, vec2 scaleGradient, float inkCoverage,
+                    float spacingPixels) {
+    float phasePerPixel = max(length(scaleGradient), 1e-10);
+    float continuousOctave = clamp(-log2(max(spacingPixels, 2.0) * phasePerPixel), -20.0, 20.0);
+    float parentOctave = floor(continuousOctave);
+    float subdivision = exp2(fract(continuousOctave));
+    float childActivation = subdivision - 1.0;
+    float linesPerUnit = exp2(parentOctave);
+    float parentCoordinate = phase * linesPerUnit;
+    float footprint = max((abs(phaseGradient.x) + abs(phaseGradient.y)) * linesPerUnit, 1e-6);
+    // Share the requested coverage between the existing grid and new lines.
+    float parentWidth = clamp(inkCoverage, 0.0, 1.0) / subdivision;
+    float childWidth = parentWidth * childActivation;
+    return clamp(fhStripe(parentCoordinate, parentWidth, footprint) +
+                     fhStripe(parentCoordinate - 0.5, childWidth, footprint),
+                 0.0, 1.0);
 }
 
-// Separate held drawing-state metric from the live anti-aliasing footprint.
-float fhFamilyGrad(float phase, vec2 gradient, float ink, float gapPx)
-{
-    return fhFamilyState(phase, gradient, gradient, ink, gapPx);
+// Convenience entry points: use the same gradient for scale and filtering.
+float fhFamilyGrad(float phase, vec2 phaseGradient, float inkCoverage, float spacingPixels) {
+    return fhFamilyState(phase, phaseGradient, phaseGradient, inkCoverage, spacingPixels);
 }
 
-float fhFamily(float phase, float ink, float gapPx) {
-    return fhFamilyGrad(phase, vec2(dFdx(phase), dFdy(phase)), ink, gapPx);
+float fhFamily(float phase, float inkCoverage, float spacingPixels) {
+    return fhFamilyGrad(phase, vec2(dFdx(phase), dFdy(phase)), inkCoverage, spacingPixels);
 }
 
 // Under locally independent crossing phases, union coverage equals ink.
 // On curved charts / correlated phases this is a local tone approximation.
-float fhCross(vec2 phase, float ink, float gapPx) {
-    float a = min(clamp(ink, 0.0, 1.0), 0.46);
-    float b = (clamp(ink, 0.0, 1.0) - a) / (1.0 - a);
-    float first = fhFamily(phase.x, a, gapPx);
-    float second = fhFamily(phase.y, b, gapPx);
-    return first + second - first * second;
+// 0.46 caps the first direction; the second supplies the remaining darkness.
+float fhCross(vec2 phase, float inkCoverage, float spacingPixels) {
+    float primaryCoverage = min(clamp(inkCoverage, 0.0, 1.0), 0.46);
+    float crossCoverage =
+        (clamp(inkCoverage, 0.0, 1.0) - primaryCoverage) / (1.0 - primaryCoverage);
+    float primaryInk = fhFamily(phase.x, primaryCoverage, spacingPixels);
+    float crossInk = fhFamily(phase.y, crossCoverage, spacingPixels);
+    return primaryInk + crossInk - primaryInk * crossInk;
 }
 
 // Optional compile-time chart support; default retains the general shader.
 #ifndef PN_CHART_MASK
 #define PN_CHART_MASK 7
 #endif
-// Nested pencil marks, 2026. MIT. See RESEARCH.md for provenance and limits.
-// Parent/child centers retain the dyadic ancestry of the original experiment.
+// Nested pencil marks. MIT. See docs/hatching.md and docs/references.md.
+// Read from pnPencil down the call chain: chart -> family -> stroke -> line key.
+// Position and derivatives use the same surface coordinates. Pixel distances
+// refer to the final output resolution, including when shading is supersampled.
 
-float pnHash(vec2 p) {
-    vec3 q=fract(vec3(p.xyx)*vec3(0.1031,0.1030,0.0973));
-    q+=dot(q,q.yzx+33.33);
-    return fract((q.x+q.y)*q.z);
-}
-float pnNoise(vec2 p) {
-    vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
-    return mix(mix(pnHash(i),pnHash(i+vec2(1,0)),f.x),
-               mix(pnHash(i+vec2(0,1)),pnHash(i+vec2(1,1)),f.x),f.y);
+float pnHash(vec2 coordinate) {
+    vec3 hashState = fract(vec3(coordinate.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    hashState += dot(hashState, hashState.yzx + 33.33);
+    return fract((hashState.x + hashState.y) * hashState.z);
 }
 
-// Reducing the dyadic fraction (index / 2^level) gives a persistent line ID.
+float pnNoise(vec2 coordinate) {
+    vec2 cell = floor(coordinate);
+    vec2 blendWeight = fract(coordinate);
+    blendWeight = blendWeight * blendWeight * (3.0 - 2.0 * blendWeight);
+    return mix(mix(pnHash(cell), pnHash(cell + vec2(1, 0)), blendWeight.x),
+               mix(pnHash(cell + vec2(0, 1)), pnHash(cell + vec2(1, 1)), blendWeight.x),
+               blendWeight.y);
+}
+
+// Reducing the dyadic fraction (lineIndex / 2^octave) gives a persistent line ID.
 // Five bit tests find trailing zero count, including negative indices.
-vec2 pnLineKey(float index,float level) {
-    int j=int(abs(index));
-    if(j==0)return vec2(0,-12);
-    int count=0;
-    if((j&65535)==0){j>>=16;count+=16;}
-    if((j&255)==0){j>>=8;count+=8;}
-    if((j&15)==0){j>>=4;count+=4;}
-    if((j&3)==0){j>>=2;count+=2;}
-    if((j&1)==0){j>>=1;count+=1;}
-    return vec2(float(j)*sign(index),level-float(count));
+vec2 pnLineKey(float lineIndex, float octave) {
+    int reducedIndex = int(abs(lineIndex));
+    if (reducedIndex == 0) {
+        return vec2(0, -12);
+    }
+    int removedDoublings = 0;
+    if ((reducedIndex & 65535) == 0) {
+        reducedIndex >>= 16;
+        removedDoublings += 16;
+    }
+    if ((reducedIndex & 255) == 0) {
+        reducedIndex >>= 8;
+        removedDoublings += 8;
+    }
+    if ((reducedIndex & 15) == 0) {
+        reducedIndex >>= 4;
+        removedDoublings += 4;
+    }
+    if ((reducedIndex & 3) == 0) {
+        reducedIndex >>= 2;
+        removedDoublings += 2;
+    }
+    if ((reducedIndex & 1) == 0) {
+        reducedIndex >>= 1;
+        removedDoublings += 1;
+    }
+    return vec2(float(reducedIndex) * sign(lineIndex), octave - float(removedDoublings));
 }
 
 // A finite pressure stroke attached to one persistent centerline. The length
 // and gap structure depend on its BIRTH level, never its current octave label.
-float pnStroke(float across,float along,float level,float index,float width,
-               float activation,float acrossRate,float alongRate,float frameSeed,float familySeed) {
-    float frequency=exp2(level);
-    vec2 key=pnLineKey(index,level)+vec2(familySeed*17.0,0);
-    float r=pnHash(key+1.13), r2=pnHash(key+31.77);
-    float birthFrequency=exp2(key.y);
-    float segmentRate=birthFrequency/(4.5+6.0*r);
-    float t=along*segmentRate+r2*19.0;
-    float cell=floor(t), f=fract(t);
-    float segment=pnHash(key+vec2(cell,13.71));
-    float birthRank=0.0001+0.9998*pnHash(key+vec2(cell+31.0,73.9));
-    float exists=step(birthRank,activation);
+// across/along coordinates are measured in the chart's surface units.
+// nominalWidth is a fraction of the current line spacing; birthActivation is
+// the fraction of eligible child segments. The two rates are units per pixel.
+float pnStroke(float acrossCoordinate, float alongCoordinate, float octave, float lineIndex,
+               float nominalWidth, float birthActivation, float acrossPerPixel, float alongPerPixel,
+               float frameSeed, float familySeed) {
+    // Persistent line identity controls length, gaps and the birth threshold.
+    float linesPerUnit = exp2(octave);
+    vec2 lineKey = pnLineKey(lineIndex, octave) + vec2(familySeed * 17.0, 0);
+    float shapeRandom = pnHash(lineKey + 1.13);
+    float phaseRandom = pnHash(lineKey + 31.77);
+    float birthLinesPerUnit = exp2(lineKey.y);
+    float segmentsPerUnit = birthLinesPerUnit / (4.5 + 6.0 * shapeRandom);
+    float segmentCoordinate = alongCoordinate * segmentsPerUnit + phaseRandom * 19.0;
+    float segmentIndex = floor(segmentCoordinate);
+    float segmentFraction = fract(segmentCoordinate);
+    float segmentRandom = pnHash(lineKey + vec2(segmentIndex, 13.71));
+    float birthRank = 0.0001 + 0.9998 * pnHash(lineKey + vec2(segmentIndex + 31.0, 73.9));
+    float isBorn = step(birthRank, birthActivation);
     // Rejected children contribute exactly zero; no pressure/noise work needed.
-    if(exists==0.0)return 0.0;
-    float fwidthT=max(alongRate*segmentRate,0.001);
-    float tip=min(f,1.0-f);
-    float mask=smoothstep(0.045,0.14+0.12*segment,tip);
+    if (isBorn == 0.0) {
+        return 0.0;
+    }
+
+    // Taper each end, then average away gaps that are smaller than a pixel.
+    float segmentFootprint = max(alongPerPixel * segmentsPerUnit, 0.001);
+    float distanceToTip = min(segmentFraction, 1.0 - segmentFraction);
+    float tipCoverage = smoothstep(0.045, 0.14 + 0.12 * segmentRandom, distanceToTip);
     // If the segment is subpixel, use its approximate mean instead of flicker.
-    mask=mix(mask,0.73,smoothstep(0.25,0.8,fwidthT));
-    float pressure=(0.62+0.50*r)*(0.72+0.28*sin(3.141593*f));
-    float jitter=pnHash(key+vec2(frameSeed*0.719,91.0))-0.5;
-    float wobble=sin(t*6.283185+r*6.0)+0.4*sin(t*17.0+r2*9.0);
+    tipCoverage = mix(tipCoverage, 0.73, smoothstep(0.25, 0.8, segmentFootprint));
+
+    // Shape and drawing variation stay attached to this line's key.
+    float strokePressure =
+        (0.62 + 0.50 * shapeRandom) * (0.72 + 0.28 * sin(3.141593 * segmentFraction));
+    float frameOffset = pnHash(lineKey + vec2(frameSeed * 0.719, 91.0)) - 0.5;
+    float centerlineWave = sin(segmentCoordinate * 6.283185 + shapeRandom * 6.0) +
+                           0.4 * sin(segmentCoordinate * 17.0 + phaseRandom * 9.0);
     // Small screen-space displacement, seeded by persistent line identity.
     // It is unchanged by parent/child relabeling at the same viewing scale.
-    float offset=(0.35*wobble+0.75*jitter)*acrossRate*frequency;
-    float distance=across*frequency-index+offset;
-    float actualWidth=width*pressure*(0.76+0.24*mask);
-    float footprint=max(acrossRate*frequency,0.00001);
-    float core=clamp((actualWidth*0.5-abs(distance))/footprint+0.5,0.0,1.0);
-    if(core==0.0)return 0.0;
-    float newPressure=0.78+0.44*pnHash(key+vec2(frameSeed*0.33,cell+101.0));
-    return core*mask*newPressure*exists;
+    float centerlineOffset =
+        (0.35 * centerlineWave + 0.75 * frameOffset) * acrossPerPixel * linesPerUnit;
+    float distanceToLine = acrossCoordinate * linesPerUnit - lineIndex + centerlineOffset;
+
+    // Convert distance to antialiased coverage, then apply taper and drawing pressure.
+    float strokeWidth = nominalWidth * strokePressure * (0.76 + 0.24 * tipCoverage);
+    float lineFootprint = max(acrossPerPixel * linesPerUnit, 0.00001);
+    float lineCoverage =
+        clamp((strokeWidth * 0.5 - abs(distanceToLine)) / lineFootprint + 0.5, 0.0, 1.0);
+    if (lineCoverage == 0.0) {
+        return 0.0;
+    }
+    float framePressure =
+        0.78 + 0.44 * pnHash(lineKey + vec2(frameSeed * 0.33, segmentIndex + 101.0));
+    return lineCoverage * tipCoverage * framePressure * isBorn;
 }
 
-float pnFamily(vec2 uv,vec2 dx,vec2 dy,float angle,float gap,float seed,float frameSeed) {
-    vec2 a=vec2(cos(angle),sin(angle)),b=vec2(-a.y,a.x);
-    float across=dot(uv,a)+seed*0.173;
-    float along=dot(uv,b);
-    float acrossRate=max(length(vec2(dot(dx,a),dot(dy,a))),1e-9);
-    float alongRate=max(length(vec2(dot(dx,b),dot(dy,b))),1e-9);
-    float lod=clamp(-log2(gap*acrossRate),-16.0,16.0);
-    float level=floor(lod), sub=exp2(fract(lod)), birth=sub-1.0;
-    float u=across*exp2(level);
-    float parentIndex=floor(u+0.5), childIndex=2.0*floor(u)+1.0;
-    float parent=pnStroke(across,along,level,parentIndex,0.21/sub,1.0,
-                          acrossRate,alongRate,frameSeed,seed);
-    float child=pnStroke(across,along,level+1.0,childIndex,0.42/sub,birth,
-                         acrossRate,alongRate,frameSeed,seed);
-    return min(1.0,parent+child);
+// A family is a set of parallel strokes. The parent grid remains in place;
+// odd sites in the next finer grid become the new children as spacing changes.
+float pnFamily(vec2 chartPosition, vec2 chartDx, vec2 chartDy, float angleRadians,
+               float spacingPixels, float familySeed, float frameSeed) {
+    vec2 acrossDirection = vec2(cos(angleRadians), sin(angleRadians));
+    vec2 alongDirection = vec2(-acrossDirection.y, acrossDirection.x);
+    float acrossCoordinate = dot(chartPosition, acrossDirection) + familySeed * 0.173;
+    float alongCoordinate = dot(chartPosition, alongDirection);
+    float acrossPerPixel =
+        max(length(vec2(dot(chartDx, acrossDirection), dot(chartDy, acrossDirection))), 1e-9);
+    float alongPerPixel =
+        max(length(vec2(dot(chartDx, alongDirection), dot(chartDy, alongDirection))), 1e-9);
+
+    // Keep spacing near spacingPixels, including between integer octaves.
+    float continuousOctave = clamp(-log2(spacingPixels * acrossPerPixel), -16.0, 16.0);
+    float parentOctave = floor(continuousOctave);
+    float subdivision = exp2(fract(continuousOctave));
+    float childActivation = subdivision - 1.0;
+
+    // Evaluate the nearest parent and the child between two parents.
+    float parentCoordinate = acrossCoordinate * exp2(parentOctave);
+    float parentIndex = floor(parentCoordinate + 0.5);
+    float childIndex = 2.0 * floor(parentCoordinate) + 1.0;
+    float parentInk =
+        pnStroke(acrossCoordinate, alongCoordinate, parentOctave, parentIndex, 0.21 / subdivision,
+                 1.0, acrossPerPixel, alongPerPixel, frameSeed, familySeed);
+    float childInk = pnStroke(acrossCoordinate, alongCoordinate, parentOctave + 1.0, childIndex,
+                              0.42 / subdivision, childActivation, acrossPerPixel, alongPerPixel,
+                              frameSeed, familySeed);
+    return min(1.0, parentInk + childInk);
 }
 
-float pnChart(vec2 uv,vec2 dx,vec2 dy,float tone,float chartSeed,float frameSeed) {
+// One planar chart contributes three stroke directions plus broad graphite.
+// The result is graphite deposit, not yet a final [0, 1] ink coverage.
+float pnChart(vec2 chartPosition, vec2 chartDx, vec2 chartDy, float tone, float chartSeed,
+              float frameSeed) {
     // A view-independent, smooth chart deformation: no latitude/longitude pole.
-    vec2 q=uv+0.024*vec2(sin(uv.y*4.1+chartSeed),sin(uv.x*3.3-chartSeed));
-    vec2 warpX=vec2(1.0,0.0792*cos(uv.x*3.3-chartSeed));
-    vec2 warpY=vec2(0.0984*cos(uv.y*4.1+chartSeed),1.0);
-    vec2 gx=warpX*dx.x+warpY*dx.y, gy=warpX*dy.x+warpY*dy.y;
-    float first=pnFamily(q,gx,gy,-0.64,3.8,chartSeed+1.0,frameSeed);
-    float crossAmount=smoothstep(0.18,0.68,tone);
-    float second=0.0;
-    if(crossAmount>0.0)second=pnFamily(q,gx,gy,0.26,3.15,chartSeed+4.0,frameSeed);
-    float third=pnFamily(q,gx,gy,-0.83,2.5,chartSeed+9.0,frameSeed);
-    float broad=0.83+0.25*pnNoise(q*18.0+chartSeed);
-    return 0.25*broad + 2.9*first + 2.5*second*crossAmount + 1.3*third;
+    vec2 warpedPosition = chartPosition + 0.024 * vec2(sin(chartPosition.y * 4.1 + chartSeed),
+                                                       sin(chartPosition.x * 3.3 - chartSeed));
+    // Columns of the warp Jacobian; 0.0792 = 0.024 * 3.3,
+    // and 0.0984 = 0.024 * 4.1. Apply it to both pixel derivatives.
+    vec2 warpDerivativeX = vec2(1.0, 0.0792 * cos(chartPosition.x * 3.3 - chartSeed));
+    vec2 warpDerivativeY = vec2(0.0984 * cos(chartPosition.y * 4.1 + chartSeed), 1.0);
+    vec2 warpedDx = warpDerivativeX * chartDx.x + warpDerivativeY * chartDx.y;
+    vec2 warpedDy = warpDerivativeX * chartDy.x + warpDerivativeY * chartDy.y;
+
+    // Crossing strokes build darker tones without rotating the surface chart.
+    float primaryInk =
+        pnFamily(warpedPosition, warpedDx, warpedDy, -0.64, 3.8, chartSeed + 1.0, frameSeed);
+    float crossAmount = smoothstep(0.18, 0.68, tone);
+    float crossInk = 0.0;
+    if (crossAmount > 0.0) {
+        crossInk =
+            pnFamily(warpedPosition, warpedDx, warpedDy, 0.26, 3.15, chartSeed + 4.0, frameSeed);
+    }
+    float detailInk =
+        pnFamily(warpedPosition, warpedDx, warpedDy, -0.83, 2.5, chartSeed + 9.0, frameSeed);
+    float broadDeposit = 0.83 + 0.25 * pnNoise(warpedPosition * 18.0 + chartSeed);
+    return 0.25 * broadDeposit + 2.9 * primaryInk + 2.5 * crossInk * crossAmount + 1.3 * detailInk;
 }
 
 // A partition of unity over three well-conditioned planar charts. Pole-prone
 // charts lose support before their projected coordinate system collapses.
-float pnPencil(vec3 p,vec3 normal,vec3 dpdx,vec3 dpdy,float tone,float frameSeed) {
+float pnPencil(vec3 surfacePosition, vec3 surfaceNormal, vec3 positionDx, vec3 positionDy,
+               float tone, float frameSeed) {
     // Derivatives are supplied by the caller before this branch.
     // Lit paper and zero-weight charts have analytically zero contributions.
-    if(tone<=0.0)return 0.0;
-    float deposit=0.0;
-    vec3 weights=pow(max(abs(normal)-vec3(0.22),vec3(0)),vec3(4));
-    weights/=max(dot(weights,vec3(1)),1e-6);
+    if (tone <= 0.0) {
+        return 0.0;
+    }
+    float graphiteDeposit = 0.0;
+    vec3 chartWeights = pow(max(abs(surfaceNormal) - vec3(0.22), vec3(0)), vec3(4));
+    chartWeights /= max(dot(chartWeights, vec3(1)), 1e-6);
 #if (PN_CHART_MASK & 1)
-    if(weights.x>0.0)deposit+=weights.x*pnChart(p.yz,dpdx.yz,dpdy.yz,tone,1.0,frameSeed);
+    if (chartWeights.x > 0.0) {
+        graphiteDeposit += chartWeights.x * pnChart(surfacePosition.yz, positionDx.yz,
+                                                    positionDy.yz, tone, 1.0, frameSeed);
+    }
 #endif
 #if (PN_CHART_MASK & 2)
-    if(weights.y>0.0)deposit+=weights.y*pnChart(p.zx,dpdx.zx,dpdy.zx,tone,5.0,frameSeed);
+    if (chartWeights.y > 0.0) {
+        graphiteDeposit += chartWeights.y * pnChart(surfacePosition.zx, positionDx.zx,
+                                                    positionDy.zx, tone, 5.0, frameSeed);
+    }
 #endif
 #if (PN_CHART_MASK & 4)
-    if(weights.z>0.0)deposit+=weights.z*pnChart(p.xy,dpdx.xy,dpdy.xy,tone,9.0,frameSeed);
+    if (chartWeights.z > 0.0) {
+        graphiteDeposit += chartWeights.z * pnChart(surfacePosition.xy, positionDx.xy,
+                                                    positionDy.xy, tone, 9.0, frameSeed);
+    }
 #endif
-    float opticalDepth=-log(max(1.0-tone,0.01));
-    return 1.0-exp(-opticalDepth*deposit*1.12);
+
+    // Convert accumulated graphite to coverage. tone == 0 stays bare paper;
+    // overlapping strokes approach solid graphite as optical depth increases.
+    float opticalDepth = -log(max(1.0 - tone, 0.01));
+    return 1.0 - exp(-opticalDepth * graphiteDeposit * 1.12);
 }
 
 
-vec3 targetAtZoom(float z) {
-    return mix(vec3(-0.12,-0.12,0.0),vec3(0.5,-0.46,0.1),smoothstep(0.0,1.5,z));
+vec3 targetAtZoom(float zoom) {
+    return mix(vec3(-0.12, -0.12, 0.0), vec3(0.5, -0.46, 0.1), smoothstep(0.0, 1.5, zoom));
 }
-vec2 mapScene(vec3 p) {
-    vec2 d = vec2(length(p - vec3(0.35, 0.04, 0.0)) - 0.86, 1.0);
-    vec3 q = p - vec3(-0.99, -0.43, 0.27);
-    q.xy = mat2(0.92, 0.39, -0.39, 0.92) * q.xy;
-    float ring = length(vec2(length(q.xy) - 0.40, q.z)) - 0.16;
-    if (ring < d.x) d = vec2(ring, 2.0);
-    vec2 c = abs(vec2(length((p - vec3(0.35,0,0)).xz), p.y + 0.92)) - vec2(0.67, 0.10);
-    float base = min(max(c.x,c.y),0.0) + length(max(c,0.0));
-    if (base < d.x) d = vec2(base, 3.0);
-    float floorDist = p.y + 1.02;
-    if (floorDist < d.x) d = vec2(floorDist, 4.0);
-    return d;
-}
-vec3 normalAt(vec3 p) {
-    vec2 e = vec2(0.001, 0.0);
-    return normalize(vec3(mapScene(p+e.xyy).x-mapScene(p-e.xyy).x,
-                          mapScene(p+e.yxy).x-mapScene(p-e.yxy).x,
-                          mapScene(p+e.yyx).x-mapScene(p-e.yyx).x));
-}
-float shadowAt(vec3 p, vec3 l) {
-    float t = 0.015, visibility = 1.0;
-    for (int i=0; i<32; i++) {
-        float h = mapScene(p+l*t).x;
-        visibility = min(visibility, 14.0*h/t);
-        t += clamp(h,0.012,0.25);
-        if (h < 0.001 || t > 5.0) break;
+// Signed-distance scene query: x = nearest distance, y = material category.
+vec2 mapScene(vec3 position) {
+    vec2 nearestSurface = vec2(length(position - vec3(0.35, 0.04, 0.0)) - 0.86, 1.0);
+    vec3 ringPosition = position - vec3(-0.99, -0.43, 0.27);
+    ringPosition.xy = mat2(0.92, 0.39, -0.39, 0.92) * ringPosition.xy;
+    float ringDistance = length(vec2(length(ringPosition.xy) - 0.40, ringPosition.z)) - 0.16;
+    if (ringDistance < nearestSurface.x) {
+        nearestSurface = vec2(ringDistance, 2.0);
     }
-    return clamp(visibility,0.0,1.0);
+    vec2 pedestalSection =
+        abs(vec2(length((position - vec3(0.35, 0, 0)).xz), position.y + 0.92)) - vec2(0.67, 0.10);
+    float pedestalDistance =
+        min(max(pedestalSection.x, pedestalSection.y), 0.0) + length(max(pedestalSection, 0.0));
+    if (pedestalDistance < nearestSurface.x) {
+        nearestSurface = vec2(pedestalDistance, 3.0);
+    }
+    float floorDistance = position.y + 1.02;
+    if (floorDistance < nearestSurface.x) {
+        nearestSurface = vec2(floorDistance, 4.0);
+    }
+    return nearestSurface;
 }
-float comparisonFamily(float phase, float ink, vec2 grad, vec2 stateGrad) {
-    float g = max(length(stateGrad),1e-10);
+
+vec3 normalAt(vec3 position) {
+    vec2 sampleOffset = vec2(0.001, 0.0);
+    return normalize(
+        vec3(mapScene(position + sampleOffset.xyy).x - mapScene(position - sampleOffset.xyy).x,
+             mapScene(position + sampleOffset.yxy).x - mapScene(position - sampleOffset.yxy).x,
+             mapScene(position + sampleOffset.yyx).x - mapScene(position - sampleOffset.yyx).x));
+}
+// Soft visibility estimate for the sculpture; the city uses a shadow map.
+float shadowAt(vec3 position, vec3 lightDirection) {
+    float rayDistance = 0.015;
+    float visibility = 1.0;
+    for (int stepIndex = 0; stepIndex < 32; stepIndex++) {
+        float surfaceDistance = mapScene(position + lightDirection * rayDistance).x;
+        visibility = min(visibility, 14.0 * surfaceDistance / rayDistance);
+        rayDistance += clamp(surfaceDistance, 0.012, 0.25);
+        if (surfaceDistance < 0.001 || rayDistance > 5.0) {
+            break;
+        }
+    }
+    return clamp(visibility, 0.0, 1.0);
+}
+
+float comparisonFamily(float phase, float ink, vec2 phaseGradient, vec2 scaleGradient) {
+    float phasePerPixel = max(length(scaleGradient), 1e-10);
     if (method == 2) {
-        return fhStripe(phase*32.0,ink,(abs(grad.x)+abs(grad.y))*32.0);
+        return fhStripe(phase * 32.0, ink, (abs(phaseGradient.x) + abs(phaseGradient.y)) * 32.0);
     }
-    return fhFamilyState(phase,grad,stateGrad,ink,spacing);
+    return fhFamilyState(phase, phaseGradient, scaleGradient, ink, spacing);
 }
+
 float renderHatch(vec2 phases, float ink, vec2 stateFirst, vec2 stateSecond) {
-    vec2 dx = dFdx(phases), dy = dFdy(phases);
-    float a = min(ink,0.46), b = (ink-a)/(1.0-a);
-    float first = comparisonFamily(phases.x,a,vec2(dx.x,dy.x),stateFirst);
-    float second = comparisonFamily(phases.y,b,vec2(dx.y,dy.y),stateSecond);
-    return first + second - first*second;
+    vec2 phaseDx = dFdx(phases);
+    vec2 phaseDy = dFdy(phases);
+    float primaryCoverage = min(ink, 0.46);
+    float crossCoverage = (ink - primaryCoverage) / (1.0 - primaryCoverage);
+    float primaryInk =
+        comparisonFamily(phases.x, primaryCoverage, vec2(phaseDx.x, phaseDy.x), stateFirst);
+    float crossInk =
+        comparisonFamily(phases.y, crossCoverage, vec2(phaseDx.y, phaseDy.y), stateSecond);
+    return primaryInk + crossInk - primaryInk * crossInk;
 }
 // Phase gradient in the HELD camera's pixel coordinates at this surface point.
 // Its local tangent-plane Jacobian is independent of current camera motion.
-vec2 heldGradient(vec3 p, vec3 n, vec3 phaseGradient) {
+vec2 heldGradient(vec3 position, vec3 surfaceNormal, vec3 phaseGradient) {
     vec3 target = targetAtZoom(heldZoom);
-    vec3 ro = target + 5.0*vec3(sin(heldOrbit.x)*cos(heldOrbit.y),sin(heldOrbit.y),cos(heldOrbit.x)*cos(heldOrbit.y));
-    vec3 f = normalize(target-ro);
-    vec3 r = normalize(cross(f,vec3(0,1,0)));
-    vec3 u = cross(r,f);
-    vec3 v = p-ro;
-    float z = max(dot(v,f),0.001);
-    float scale = resolution.y*1.75*exp2(heldZoom)/z;
-    vec3 a = scale*(r-f*dot(v,r)/z);
-    vec3 b = scale*(u-f*dot(v,u)/z);
-    float det = dot(a,cross(b,n));
-    det = (det<0.0?-1.0:1.0)*max(abs(det),0.00001);
-    return vec2(dot(phaseGradient,cross(b,n)),dot(phaseGradient,cross(n,a)))/det;
+    vec3 cameraOrigin = target + 5.0 * vec3(sin(heldOrbit.x) * cos(heldOrbit.y), sin(heldOrbit.y),
+                                            cos(heldOrbit.x) * cos(heldOrbit.y));
+    vec3 cameraForward = normalize(target - cameraOrigin);
+    vec3 cameraRight = normalize(cross(cameraForward, vec3(0, 1, 0)));
+    vec3 cameraUp = cross(cameraRight, cameraForward);
+    vec3 cameraToPoint = position - cameraOrigin;
+    float viewDepth = max(dot(cameraToPoint, cameraForward), 0.001);
+    float pixelsPerUnit = resolution.y * 1.75 * exp2(heldZoom) / viewDepth;
+    vec3 screenGradientX =
+        pixelsPerUnit * (cameraRight - cameraForward * dot(cameraToPoint, cameraRight) / viewDepth);
+    vec3 screenGradientY =
+        pixelsPerUnit * (cameraUp - cameraForward * dot(cameraToPoint, cameraUp) / viewDepth);
+    float determinant = dot(screenGradientX, cross(screenGradientY, surfaceNormal));
+    determinant = (determinant < 0.0 ? -1.0 : 1.0) * max(abs(determinant), 0.00001);
+    return vec2(dot(phaseGradient, cross(screenGradientY, surfaceNormal)),
+                dot(phaseGradient, cross(surfaceNormal, screenGradientX))) /
+           determinant;
 }
+
 void main() {
-    vec2 st = (gl_FragCoord.xy-0.5*resolution)/resolution.y;
+    vec2 screenPosition = (gl_FragCoord.xy - 0.5 * resolution) / resolution.y;
     float coverage = 0.0;
+    // Flat chart and tone ramp.
     if (scene > 0) {
-        vec2 p = st*4.0/exp2(zoomStops)+pan;
-        vec2 phases = vec2(p.x+p.y*0.58, -p.x*0.36+p.y);
-        vec2 grad1=vec2(1.0,0.58), grad2=vec2(-0.36,1.0);
-        if (flow) phases += 0.035*vec2(sin(4.0*p.y)+sin(2.3*p.x),sin(3.1*p.x));
-        if (flow) {grad1+=0.035*vec2(2.3*cos(2.3*p.x),4.0*cos(4.0*p.y));grad2.x+=0.035*3.1*cos(3.1*p.x);}
-        float tone = scene==2 ? clamp(gl_FragCoord.x/resolution.x,0.0,1.0)
-                             : clamp(heldLight,0.0,1.0);
-        float heldStep=4.0/(resolution.y*exp2(heldZoom));
-        coverage = method==0 ? pnPencil(vec3(p,0),vec3(0,0,1),vec3(dFdx(p),0),vec3(dFdy(p),0),tone,frameSeed) : renderHatch(phases,tone,grad1*heldStep,grad2*heldStep);
-    } else {
-        float yaw = orbit.x, pitch = orbit.y;
-        vec3 target = targetAtZoom(zoomStops);
-        vec3 ro = target + 5.0*vec3(sin(yaw)*cos(pitch),sin(pitch),cos(yaw)*cos(pitch));
-        vec3 forward = normalize(target-ro);
-        vec3 right = normalize(cross(forward,vec3(0,1,0)));
-        vec3 up = cross(right,forward);
-        vec3 rd = normalize(forward*1.75 + (st.x*right+st.y*up)/exp2(zoomStops));
-        float t=0.0, id=0.0;
-        for (int i=0; i<80; i++) {
-            vec2 d = mapScene(ro+rd*t);
-            id = d.y;
-            if (d.x < 0.0006 || t>20.0) break;
-            t += d.x*0.85;
-        }
-        bool hit = t<20.0;
-        vec3 p = ro+rd*min(t,20.0);
-        vec3 n = normalAt(p);
-        float a = heldLight*6.283185;
-        vec3 l = normalize(vec3(cos(a)*0.8,0.85,sin(a)*0.8));
-        float visibility = shadowAt(p+n*0.004,l);
-        float formShadow = 1.0-smoothstep(-0.25,0.48,dot(n,l));
-        float shadow = max(formShadow,1.0-visibility);
-        float tone = 0.95*pow(shadow,1.12);
-        if (id>3.5) tone = 0.93*(1.0-visibility)*(1.0-smoothstep(2.0,4.0,length(p.xz)));
-        vec2 phases = vec2(dot(p,vec3(0.75,1.0,0.25)),dot(p,vec3(-0.65,0.65,0.80)));
-        vec3 grad1=vec3(0.75,1.0,0.25), grad2=vec3(-0.65,0.65,0.80);
-        if (id>3.5) {phases = vec2(p.x+p.z*0.50,p.z-p.x*0.45);grad1=vec3(1,0,0.50);grad2=vec3(-0.45,0,1);}
+        vec2 surfacePosition = screenPosition * 4.0 / exp2(zoomStops) + pan;
+        vec2 phases = vec2(surfacePosition.x + surfacePosition.y * 0.58,
+                           -surfacePosition.x * 0.36 + surfacePosition.y);
+        vec2 firstPhaseGradient = vec2(1.0, 0.58);
+        vec2 secondPhaseGradient = vec2(-0.36, 1.0);
         if (flow) {
-            phases += 0.055*vec2(sin(p.y*5.0+p.z*2.0),sin(p.x*4.0-p.z*2.0));
-            grad1+=0.055*cos(p.y*5.0+p.z*2.0)*vec3(0,5,2);
-            grad2+=0.055*cos(p.x*4.0-p.z*2.0)*vec3(4,0,-2);
+            phases += 0.035 * vec2(sin(4.0 * surfacePosition.y) + sin(2.3 * surfacePosition.x),
+                                   sin(3.1 * surfacePosition.x));
+        }
+        if (flow) {
+            firstPhaseGradient += 0.035 * vec2(2.3 * cos(2.3 * surfacePosition.x),
+                                               4.0 * cos(4.0 * surfacePosition.y));
+            secondPhaseGradient.x += 0.035 * 3.1 * cos(3.1 * surfacePosition.x);
+        }
+        float tone = scene == 2 ? clamp(gl_FragCoord.x / resolution.x, 0.0, 1.0)
+                                : clamp(heldLight, 0.0, 1.0);
+        float heldStep = 4.0 / (resolution.y * exp2(heldZoom));
+        coverage = method == 0 ? pnPencil(vec3(surfacePosition, 0), vec3(0, 0, 1),
+                                          vec3(dFdx(surfacePosition), 0),
+                                          vec3(dFdy(surfacePosition), 0), tone, frameSeed)
+                               : renderHatch(phases, tone, firstPhaseGradient * heldStep,
+                                             secondPhaseGradient * heldStep);
+    } else {
+        // Raymarch the sculpture, then evaluate its surface-attached hatching.
+        float yaw = orbit.x;
+        float pitch = orbit.y;
+        vec3 target = targetAtZoom(zoomStops);
+        vec3 cameraOrigin =
+            target + 5.0 * vec3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch));
+        vec3 forward = normalize(target - cameraOrigin);
+        vec3 right = normalize(cross(forward, vec3(0, 1, 0)));
+        vec3 up = cross(right, forward);
+        vec3 rayDirection = normalize(
+            forward * 1.75 + (screenPosition.x * right + screenPosition.y * up) / exp2(zoomStops));
+        float rayDistance = 0.0;
+        float materialId = 0.0;
+        for (int stepIndex = 0; stepIndex < 80; stepIndex++) {
+            vec2 sceneDistance = mapScene(cameraOrigin + rayDirection * rayDistance);
+            materialId = sceneDistance.y;
+            if (sceneDistance.x < 0.0006 || rayDistance > 20.0) {
+                break;
+            }
+            rayDistance += sceneDistance.x * 0.85;
+        }
+        bool hit = rayDistance < 20.0;
+        vec3 surfacePosition = cameraOrigin + rayDirection * min(rayDistance, 20.0);
+        vec3 surfaceNormal = normalAt(surfacePosition);
+        float lightRadians = heldLight * 6.283185;
+        vec3 lightDirection =
+            normalize(vec3(cos(lightRadians) * 0.8, 0.85, sin(lightRadians) * 0.8));
+        float visibility = shadowAt(surfacePosition + surfaceNormal * 0.004, lightDirection);
+        float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));
+        float shadow = max(formShadow, 1.0 - visibility);
+        float tone = 0.95 * pow(shadow, 1.12);
+        if (materialId > 3.5) {
+            tone = 0.93 * (1.0 - visibility) *
+                   (1.0 - smoothstep(2.0, 4.0, length(surfacePosition.xz)));
+        }
+        vec2 phases = vec2(dot(surfacePosition, vec3(0.75, 1.0, 0.25)),
+                           dot(surfacePosition, vec3(-0.65, 0.65, 0.80)));
+        vec3 firstPhaseGradient = vec3(0.75, 1.0, 0.25);
+        vec3 secondPhaseGradient = vec3(-0.65, 0.65, 0.80);
+        if (materialId > 3.5) {
+            phases = vec2(surfacePosition.x + surfacePosition.z * 0.50,
+                          surfacePosition.z - surfacePosition.x * 0.45);
+            firstPhaseGradient = vec3(1, 0, 0.50);
+            secondPhaseGradient = vec3(-0.45, 0, 1);
+        }
+        if (flow) {
+            phases += 0.055 * vec2(sin(surfacePosition.y * 5.0 + surfacePosition.z * 2.0),
+                                   sin(surfacePosition.x * 4.0 - surfacePosition.z * 2.0));
+            firstPhaseGradient +=
+                0.055 * cos(surfacePosition.y * 5.0 + surfacePosition.z * 2.0) * vec3(0, 5, 2);
+            secondPhaseGradient +=
+                0.055 * cos(surfacePosition.x * 4.0 - surfacePosition.z * 2.0) * vec3(4, 0, -2);
         }
         // Derivatives occur for every invocation in this uniform scene branch.
-        coverage = method==0 ? pnPencil(p,n,dFdx(p),dFdy(p),tone,frameSeed) : renderHatch(phases,tone,heldGradient(p,n,grad1),heldGradient(p,n,grad2));
-        float ndv = abs(dot(n,-rd));
-        float edge = 1.0-smoothstep(0.035,0.095,ndv);
-        if (id<3.5) coverage = max(coverage,edge*0.83*pow(tone,0.45)*(0.45+0.55*pnNoise(p.xy*29.0)));
-        if (!hit) coverage = 0.0;
-        if (id>3.5) coverage *= 1.0-smoothstep(7.0,15.0,length(p.xz));
+        coverage =
+            method == 0
+                ? pnPencil(surfacePosition, surfaceNormal, dFdx(surfacePosition),
+                           dFdy(surfacePosition), tone, frameSeed)
+                : renderHatch(phases, tone,
+                              heldGradient(surfacePosition, surfaceNormal, firstPhaseGradient),
+                              heldGradient(surfacePosition, surfaceNormal, secondPhaseGradient));
+        float viewFacing = abs(dot(surfaceNormal, -rayDirection));
+        float silhouetteInk = 1.0 - smoothstep(0.035, 0.095, viewFacing);
+        if (materialId < 3.5) {
+            coverage = max(coverage, silhouetteInk * 0.83 * pow(tone, 0.45) *
+                                         (0.45 + 0.55 * pnNoise(surfacePosition.xy * 29.0)));
+        }
+        if (!hit) {
+            coverage = 0.0;
+        }
+        if (materialId > 3.5) {
+            coverage *= 1.0 - smoothstep(7.0, 15.0, length(surfacePosition.xz));
+        }
     }
-    float tooth=pnHash(floor(gl_FragCoord.xy));
-    float fibre=pnNoise(gl_FragCoord.xy*vec2(0.13,0.87));
-    float contact=clamp(0.80+0.27*tooth+0.13*fibre,0.0,1.0);
-    coverage*=mix(contact,1.0,pow(coverage,3.0));
-    vec3 paperGrain=paper*(0.978+0.022*tooth);
-    outColor = vec4(mix(paperGrain,pen,coverage),1.0);
+
+    // Apply the same paper contact and grain to every study.
+    float paperTooth = pnHash(floor(gl_FragCoord.xy));
+    float paperFibre = pnNoise(gl_FragCoord.xy * vec2(0.13, 0.87));
+    float paperContact = clamp(0.80 + 0.27 * paperTooth + 0.13 * paperFibre, 0.0, 1.0);
+    coverage *= mix(paperContact, 1.0, pow(coverage, 3.0));
+    vec3 paperGrain = paper * (0.978 + 0.022 * paperTooth);
+    outColor = vec4(mix(paperGrain, pen, coverage), 1.0);
 }
 
   </script>
@@ -467,180 +639,275 @@ void main() {
 // Conceptual lineage: Rune Skovbo Johansen's Surface-Stable Fractal Dithering
 // and Praun et al., Real-Time Hatching (2001). Independently written code.
 
-// Antiderivative of a unit-period stripe of full width w, centered on integers.
-float fhIntegral(float x, float w) {
-    float q = x + 0.5 * w;
-    return floor(q) * w + min(fract(q), w);
+// Antiderivative of a unit-period stripe of full width stripeWidth, centered on integers.
+float fhIntegral(float phase, float stripeWidth) {
+    float shiftedPhase = phase + 0.5 * stripeWidth;
+    return floor(shiftedPhase) * stripeWidth + min(fract(shiftedPhase), stripeWidth);
 }
 
 // Exact integral for a 1D box footprint; approximation to a 2D pixel filter.
 // Reducing phase BEFORE the integral avoids subtracting two large integrals.
 float fhStripe(float phase, float width, float footprint) {
-    float x = fract(phase);
-    float w = clamp(width, 0.0, 1.0);
-    float p = max(footprint, 1e-6);
-    return clamp((fhIntegral(x + p * 0.5, w)
-                - fhIntegral(x - p * 0.5, w)) / p, 0.0, 1.0);
+    float wrappedPhase = fract(phase);
+    float stripeWidth = clamp(width, 0.0, 1.0);
+    float pixelFootprint = max(footprint, 1e-6);
+    return clamp((fhIntegral(wrappedPhase + pixelFootprint * 0.5, stripeWidth) -
+                  fhIntegral(wrappedPhase - pixelFootprint * 0.5, stripeWidth)) /
+                     pixelFootprint,
+                 0.0, 1.0);
 }
 
 // phase is a continuous, SURFACE-ATTACHED scalar. Derivatives must be taken
 // BEFORE floor/fract/LOD selection, in uniform fragment control flow.
-// gapPx is measured in render-target pixels. ink is desired area coverage.
-float fhFamilyState(float phase, vec2 gradient, vec2 stateGradient, float ink, float gapPx) {
-    float g = max(length(stateGradient), 1e-10);
-    float lod = clamp(-log2(max(gapPx, 2.0) * g), -20.0, 20.0);
-    float level = floor(lod);
-    float subdivision = exp2(fract(lod));
-    float birth = subdivision - 1.0;
-    float frequency = exp2(level);
-    float u = phase * frequency;
-    float footprint = max((abs(gradient.x) + abs(gradient.y)) * frequency, 1e-6);
-    float parentWidth = clamp(ink, 0.0, 1.0) / subdivision;
-    float childWidth = parentWidth * birth;
-    return clamp(fhStripe(u, parentWidth, footprint)
-               + fhStripe(u - 0.5, childWidth, footprint), 0.0, 1.0);
+// spacingPixels is measured in output pixels. inkCoverage is desired area coverage.
+float fhFamilyState(float phase, vec2 phaseGradient, vec2 scaleGradient, float inkCoverage,
+                    float spacingPixels) {
+    float phasePerPixel = max(length(scaleGradient), 1e-10);
+    float continuousOctave = clamp(-log2(max(spacingPixels, 2.0) * phasePerPixel), -20.0, 20.0);
+    float parentOctave = floor(continuousOctave);
+    float subdivision = exp2(fract(continuousOctave));
+    float childActivation = subdivision - 1.0;
+    float linesPerUnit = exp2(parentOctave);
+    float parentCoordinate = phase * linesPerUnit;
+    float footprint = max((abs(phaseGradient.x) + abs(phaseGradient.y)) * linesPerUnit, 1e-6);
+    // Share the requested coverage between the existing grid and new lines.
+    float parentWidth = clamp(inkCoverage, 0.0, 1.0) / subdivision;
+    float childWidth = parentWidth * childActivation;
+    return clamp(fhStripe(parentCoordinate, parentWidth, footprint) +
+                     fhStripe(parentCoordinate - 0.5, childWidth, footprint),
+                 0.0, 1.0);
 }
 
-// Separate held drawing-state metric from the live anti-aliasing footprint.
-float fhFamilyGrad(float phase, vec2 gradient, float ink, float gapPx)
-{
-    return fhFamilyState(phase, gradient, gradient, ink, gapPx);
+// Convenience entry points: use the same gradient for scale and filtering.
+float fhFamilyGrad(float phase, vec2 phaseGradient, float inkCoverage, float spacingPixels) {
+    return fhFamilyState(phase, phaseGradient, phaseGradient, inkCoverage, spacingPixels);
 }
 
-float fhFamily(float phase, float ink, float gapPx) {
-    return fhFamilyGrad(phase, vec2(dFdx(phase), dFdy(phase)), ink, gapPx);
+float fhFamily(float phase, float inkCoverage, float spacingPixels) {
+    return fhFamilyGrad(phase, vec2(dFdx(phase), dFdy(phase)), inkCoverage, spacingPixels);
 }
 
 // Under locally independent crossing phases, union coverage equals ink.
 // On curved charts / correlated phases this is a local tone approximation.
-float fhCross(vec2 phase, float ink, float gapPx) {
-    float a = min(clamp(ink, 0.0, 1.0), 0.46);
-    float b = (clamp(ink, 0.0, 1.0) - a) / (1.0 - a);
-    float first = fhFamily(phase.x, a, gapPx);
-    float second = fhFamily(phase.y, b, gapPx);
-    return first + second - first * second;
+// 0.46 caps the first direction; the second supplies the remaining darkness.
+float fhCross(vec2 phase, float inkCoverage, float spacingPixels) {
+    float primaryCoverage = min(clamp(inkCoverage, 0.0, 1.0), 0.46);
+    float crossCoverage =
+        (clamp(inkCoverage, 0.0, 1.0) - primaryCoverage) / (1.0 - primaryCoverage);
+    float primaryInk = fhFamily(phase.x, primaryCoverage, spacingPixels);
+    float crossInk = fhFamily(phase.y, crossCoverage, spacingPixels);
+    return primaryInk + crossInk - primaryInk * crossInk;
 }
 
 // Optional compile-time chart support; default retains the general shader.
 #ifndef PN_CHART_MASK
 #define PN_CHART_MASK 7
 #endif
-// Nested pencil marks, 2026. MIT. See RESEARCH.md for provenance and limits.
-// Parent/child centers retain the dyadic ancestry of the original experiment.
+// Nested pencil marks. MIT. See docs/hatching.md and docs/references.md.
+// Read from pnPencil down the call chain: chart -> family -> stroke -> line key.
+// Position and derivatives use the same surface coordinates. Pixel distances
+// refer to the final output resolution, including when shading is supersampled.
 
-float pnHash(vec2 p) {
-    vec3 q=fract(vec3(p.xyx)*vec3(0.1031,0.1030,0.0973));
-    q+=dot(q,q.yzx+33.33);
-    return fract((q.x+q.y)*q.z);
-}
-float pnNoise(vec2 p) {
-    vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
-    return mix(mix(pnHash(i),pnHash(i+vec2(1,0)),f.x),
-               mix(pnHash(i+vec2(0,1)),pnHash(i+vec2(1,1)),f.x),f.y);
+float pnHash(vec2 coordinate) {
+    vec3 hashState = fract(vec3(coordinate.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    hashState += dot(hashState, hashState.yzx + 33.33);
+    return fract((hashState.x + hashState.y) * hashState.z);
 }
 
-// Reducing the dyadic fraction (index / 2^level) gives a persistent line ID.
+float pnNoise(vec2 coordinate) {
+    vec2 cell = floor(coordinate);
+    vec2 blendWeight = fract(coordinate);
+    blendWeight = blendWeight * blendWeight * (3.0 - 2.0 * blendWeight);
+    return mix(mix(pnHash(cell), pnHash(cell + vec2(1, 0)), blendWeight.x),
+               mix(pnHash(cell + vec2(0, 1)), pnHash(cell + vec2(1, 1)), blendWeight.x),
+               blendWeight.y);
+}
+
+// Reducing the dyadic fraction (lineIndex / 2^octave) gives a persistent line ID.
 // Five bit tests find trailing zero count, including negative indices.
-vec2 pnLineKey(float index,float level) {
-    int j=int(abs(index));
-    if(j==0)return vec2(0,-12);
-    int count=0;
-    if((j&65535)==0){j>>=16;count+=16;}
-    if((j&255)==0){j>>=8;count+=8;}
-    if((j&15)==0){j>>=4;count+=4;}
-    if((j&3)==0){j>>=2;count+=2;}
-    if((j&1)==0){j>>=1;count+=1;}
-    return vec2(float(j)*sign(index),level-float(count));
+vec2 pnLineKey(float lineIndex, float octave) {
+    int reducedIndex = int(abs(lineIndex));
+    if (reducedIndex == 0) {
+        return vec2(0, -12);
+    }
+    int removedDoublings = 0;
+    if ((reducedIndex & 65535) == 0) {
+        reducedIndex >>= 16;
+        removedDoublings += 16;
+    }
+    if ((reducedIndex & 255) == 0) {
+        reducedIndex >>= 8;
+        removedDoublings += 8;
+    }
+    if ((reducedIndex & 15) == 0) {
+        reducedIndex >>= 4;
+        removedDoublings += 4;
+    }
+    if ((reducedIndex & 3) == 0) {
+        reducedIndex >>= 2;
+        removedDoublings += 2;
+    }
+    if ((reducedIndex & 1) == 0) {
+        reducedIndex >>= 1;
+        removedDoublings += 1;
+    }
+    return vec2(float(reducedIndex) * sign(lineIndex), octave - float(removedDoublings));
 }
 
 // A finite pressure stroke attached to one persistent centerline. The length
 // and gap structure depend on its BIRTH level, never its current octave label.
-float pnStroke(float across,float along,float level,float index,float width,
-               float activation,float acrossRate,float alongRate,float frameSeed,float familySeed) {
-    float frequency=exp2(level);
-    vec2 key=pnLineKey(index,level)+vec2(familySeed*17.0,0);
-    float r=pnHash(key+1.13), r2=pnHash(key+31.77);
-    float birthFrequency=exp2(key.y);
-    float segmentRate=birthFrequency/(4.5+6.0*r);
-    float t=along*segmentRate+r2*19.0;
-    float cell=floor(t), f=fract(t);
-    float segment=pnHash(key+vec2(cell,13.71));
-    float birthRank=0.0001+0.9998*pnHash(key+vec2(cell+31.0,73.9));
-    float exists=step(birthRank,activation);
+// across/along coordinates are measured in the chart's surface units.
+// nominalWidth is a fraction of the current line spacing; birthActivation is
+// the fraction of eligible child segments. The two rates are units per pixel.
+float pnStroke(float acrossCoordinate, float alongCoordinate, float octave, float lineIndex,
+               float nominalWidth, float birthActivation, float acrossPerPixel, float alongPerPixel,
+               float frameSeed, float familySeed) {
+    // Persistent line identity controls length, gaps and the birth threshold.
+    float linesPerUnit = exp2(octave);
+    vec2 lineKey = pnLineKey(lineIndex, octave) + vec2(familySeed * 17.0, 0);
+    float shapeRandom = pnHash(lineKey + 1.13);
+    float phaseRandom = pnHash(lineKey + 31.77);
+    float birthLinesPerUnit = exp2(lineKey.y);
+    float segmentsPerUnit = birthLinesPerUnit / (4.5 + 6.0 * shapeRandom);
+    float segmentCoordinate = alongCoordinate * segmentsPerUnit + phaseRandom * 19.0;
+    float segmentIndex = floor(segmentCoordinate);
+    float segmentFraction = fract(segmentCoordinate);
+    float segmentRandom = pnHash(lineKey + vec2(segmentIndex, 13.71));
+    float birthRank = 0.0001 + 0.9998 * pnHash(lineKey + vec2(segmentIndex + 31.0, 73.9));
+    float isBorn = step(birthRank, birthActivation);
     // Rejected children contribute exactly zero; no pressure/noise work needed.
-    if(exists==0.0)return 0.0;
-    float fwidthT=max(alongRate*segmentRate,0.001);
-    float tip=min(f,1.0-f);
-    float mask=smoothstep(0.045,0.14+0.12*segment,tip);
+    if (isBorn == 0.0) {
+        return 0.0;
+    }
+
+    // Taper each end, then average away gaps that are smaller than a pixel.
+    float segmentFootprint = max(alongPerPixel * segmentsPerUnit, 0.001);
+    float distanceToTip = min(segmentFraction, 1.0 - segmentFraction);
+    float tipCoverage = smoothstep(0.045, 0.14 + 0.12 * segmentRandom, distanceToTip);
     // If the segment is subpixel, use its approximate mean instead of flicker.
-    mask=mix(mask,0.73,smoothstep(0.25,0.8,fwidthT));
-    float pressure=(0.62+0.50*r)*(0.72+0.28*sin(3.141593*f));
-    float jitter=pnHash(key+vec2(frameSeed*0.719,91.0))-0.5;
-    float wobble=sin(t*6.283185+r*6.0)+0.4*sin(t*17.0+r2*9.0);
+    tipCoverage = mix(tipCoverage, 0.73, smoothstep(0.25, 0.8, segmentFootprint));
+
+    // Shape and drawing variation stay attached to this line's key.
+    float strokePressure =
+        (0.62 + 0.50 * shapeRandom) * (0.72 + 0.28 * sin(3.141593 * segmentFraction));
+    float frameOffset = pnHash(lineKey + vec2(frameSeed * 0.719, 91.0)) - 0.5;
+    float centerlineWave = sin(segmentCoordinate * 6.283185 + shapeRandom * 6.0) +
+                           0.4 * sin(segmentCoordinate * 17.0 + phaseRandom * 9.0);
     // Small screen-space displacement, seeded by persistent line identity.
     // It is unchanged by parent/child relabeling at the same viewing scale.
-    float offset=(0.35*wobble+0.75*jitter)*acrossRate*frequency;
-    float distance=across*frequency-index+offset;
-    float actualWidth=width*pressure*(0.76+0.24*mask);
-    float footprint=max(acrossRate*frequency,0.00001);
-    float core=clamp((actualWidth*0.5-abs(distance))/footprint+0.5,0.0,1.0);
-    if(core==0.0)return 0.0;
-    float newPressure=0.78+0.44*pnHash(key+vec2(frameSeed*0.33,cell+101.0));
-    return core*mask*newPressure*exists;
+    float centerlineOffset =
+        (0.35 * centerlineWave + 0.75 * frameOffset) * acrossPerPixel * linesPerUnit;
+    float distanceToLine = acrossCoordinate * linesPerUnit - lineIndex + centerlineOffset;
+
+    // Convert distance to antialiased coverage, then apply taper and drawing pressure.
+    float strokeWidth = nominalWidth * strokePressure * (0.76 + 0.24 * tipCoverage);
+    float lineFootprint = max(acrossPerPixel * linesPerUnit, 0.00001);
+    float lineCoverage =
+        clamp((strokeWidth * 0.5 - abs(distanceToLine)) / lineFootprint + 0.5, 0.0, 1.0);
+    if (lineCoverage == 0.0) {
+        return 0.0;
+    }
+    float framePressure =
+        0.78 + 0.44 * pnHash(lineKey + vec2(frameSeed * 0.33, segmentIndex + 101.0));
+    return lineCoverage * tipCoverage * framePressure * isBorn;
 }
 
-float pnFamily(vec2 uv,vec2 dx,vec2 dy,float angle,float gap,float seed,float frameSeed) {
-    vec2 a=vec2(cos(angle),sin(angle)),b=vec2(-a.y,a.x);
-    float across=dot(uv,a)+seed*0.173;
-    float along=dot(uv,b);
-    float acrossRate=max(length(vec2(dot(dx,a),dot(dy,a))),1e-9);
-    float alongRate=max(length(vec2(dot(dx,b),dot(dy,b))),1e-9);
-    float lod=clamp(-log2(gap*acrossRate),-16.0,16.0);
-    float level=floor(lod), sub=exp2(fract(lod)), birth=sub-1.0;
-    float u=across*exp2(level);
-    float parentIndex=floor(u+0.5), childIndex=2.0*floor(u)+1.0;
-    float parent=pnStroke(across,along,level,parentIndex,0.21/sub,1.0,
-                          acrossRate,alongRate,frameSeed,seed);
-    float child=pnStroke(across,along,level+1.0,childIndex,0.42/sub,birth,
-                         acrossRate,alongRate,frameSeed,seed);
-    return min(1.0,parent+child);
+// A family is a set of parallel strokes. The parent grid remains in place;
+// odd sites in the next finer grid become the new children as spacing changes.
+float pnFamily(vec2 chartPosition, vec2 chartDx, vec2 chartDy, float angleRadians,
+               float spacingPixels, float familySeed, float frameSeed) {
+    vec2 acrossDirection = vec2(cos(angleRadians), sin(angleRadians));
+    vec2 alongDirection = vec2(-acrossDirection.y, acrossDirection.x);
+    float acrossCoordinate = dot(chartPosition, acrossDirection) + familySeed * 0.173;
+    float alongCoordinate = dot(chartPosition, alongDirection);
+    float acrossPerPixel =
+        max(length(vec2(dot(chartDx, acrossDirection), dot(chartDy, acrossDirection))), 1e-9);
+    float alongPerPixel =
+        max(length(vec2(dot(chartDx, alongDirection), dot(chartDy, alongDirection))), 1e-9);
+
+    // Keep spacing near spacingPixels, including between integer octaves.
+    float continuousOctave = clamp(-log2(spacingPixels * acrossPerPixel), -16.0, 16.0);
+    float parentOctave = floor(continuousOctave);
+    float subdivision = exp2(fract(continuousOctave));
+    float childActivation = subdivision - 1.0;
+
+    // Evaluate the nearest parent and the child between two parents.
+    float parentCoordinate = acrossCoordinate * exp2(parentOctave);
+    float parentIndex = floor(parentCoordinate + 0.5);
+    float childIndex = 2.0 * floor(parentCoordinate) + 1.0;
+    float parentInk =
+        pnStroke(acrossCoordinate, alongCoordinate, parentOctave, parentIndex, 0.21 / subdivision,
+                 1.0, acrossPerPixel, alongPerPixel, frameSeed, familySeed);
+    float childInk = pnStroke(acrossCoordinate, alongCoordinate, parentOctave + 1.0, childIndex,
+                              0.42 / subdivision, childActivation, acrossPerPixel, alongPerPixel,
+                              frameSeed, familySeed);
+    return min(1.0, parentInk + childInk);
 }
 
-float pnChart(vec2 uv,vec2 dx,vec2 dy,float tone,float chartSeed,float frameSeed) {
+// One planar chart contributes three stroke directions plus broad graphite.
+// The result is graphite deposit, not yet a final [0, 1] ink coverage.
+float pnChart(vec2 chartPosition, vec2 chartDx, vec2 chartDy, float tone, float chartSeed,
+              float frameSeed) {
     // A view-independent, smooth chart deformation: no latitude/longitude pole.
-    vec2 q=uv+0.024*vec2(sin(uv.y*4.1+chartSeed),sin(uv.x*3.3-chartSeed));
-    vec2 warpX=vec2(1.0,0.0792*cos(uv.x*3.3-chartSeed));
-    vec2 warpY=vec2(0.0984*cos(uv.y*4.1+chartSeed),1.0);
-    vec2 gx=warpX*dx.x+warpY*dx.y, gy=warpX*dy.x+warpY*dy.y;
-    float first=pnFamily(q,gx,gy,-0.64,3.8,chartSeed+1.0,frameSeed);
-    float crossAmount=smoothstep(0.18,0.68,tone);
-    float second=0.0;
-    if(crossAmount>0.0)second=pnFamily(q,gx,gy,0.26,3.15,chartSeed+4.0,frameSeed);
-    float third=pnFamily(q,gx,gy,-0.83,2.5,chartSeed+9.0,frameSeed);
-    float broad=0.83+0.25*pnNoise(q*18.0+chartSeed);
-    return 0.25*broad + 2.9*first + 2.5*second*crossAmount + 1.3*third;
+    vec2 warpedPosition = chartPosition + 0.024 * vec2(sin(chartPosition.y * 4.1 + chartSeed),
+                                                       sin(chartPosition.x * 3.3 - chartSeed));
+    // Columns of the warp Jacobian; 0.0792 = 0.024 * 3.3,
+    // and 0.0984 = 0.024 * 4.1. Apply it to both pixel derivatives.
+    vec2 warpDerivativeX = vec2(1.0, 0.0792 * cos(chartPosition.x * 3.3 - chartSeed));
+    vec2 warpDerivativeY = vec2(0.0984 * cos(chartPosition.y * 4.1 + chartSeed), 1.0);
+    vec2 warpedDx = warpDerivativeX * chartDx.x + warpDerivativeY * chartDx.y;
+    vec2 warpedDy = warpDerivativeX * chartDy.x + warpDerivativeY * chartDy.y;
+
+    // Crossing strokes build darker tones without rotating the surface chart.
+    float primaryInk =
+        pnFamily(warpedPosition, warpedDx, warpedDy, -0.64, 3.8, chartSeed + 1.0, frameSeed);
+    float crossAmount = smoothstep(0.18, 0.68, tone);
+    float crossInk = 0.0;
+    if (crossAmount > 0.0) {
+        crossInk =
+            pnFamily(warpedPosition, warpedDx, warpedDy, 0.26, 3.15, chartSeed + 4.0, frameSeed);
+    }
+    float detailInk =
+        pnFamily(warpedPosition, warpedDx, warpedDy, -0.83, 2.5, chartSeed + 9.0, frameSeed);
+    float broadDeposit = 0.83 + 0.25 * pnNoise(warpedPosition * 18.0 + chartSeed);
+    return 0.25 * broadDeposit + 2.9 * primaryInk + 2.5 * crossInk * crossAmount + 1.3 * detailInk;
 }
 
 // A partition of unity over three well-conditioned planar charts. Pole-prone
 // charts lose support before their projected coordinate system collapses.
-float pnPencil(vec3 p,vec3 normal,vec3 dpdx,vec3 dpdy,float tone,float frameSeed) {
+float pnPencil(vec3 surfacePosition, vec3 surfaceNormal, vec3 positionDx, vec3 positionDy,
+               float tone, float frameSeed) {
     // Derivatives are supplied by the caller before this branch.
     // Lit paper and zero-weight charts have analytically zero contributions.
-    if(tone<=0.0)return 0.0;
-    float deposit=0.0;
-    vec3 weights=pow(max(abs(normal)-vec3(0.22),vec3(0)),vec3(4));
-    weights/=max(dot(weights,vec3(1)),1e-6);
+    if (tone <= 0.0) {
+        return 0.0;
+    }
+    float graphiteDeposit = 0.0;
+    vec3 chartWeights = pow(max(abs(surfaceNormal) - vec3(0.22), vec3(0)), vec3(4));
+    chartWeights /= max(dot(chartWeights, vec3(1)), 1e-6);
 #if (PN_CHART_MASK & 1)
-    if(weights.x>0.0)deposit+=weights.x*pnChart(p.yz,dpdx.yz,dpdy.yz,tone,1.0,frameSeed);
+    if (chartWeights.x > 0.0) {
+        graphiteDeposit += chartWeights.x * pnChart(surfacePosition.yz, positionDx.yz,
+                                                    positionDy.yz, tone, 1.0, frameSeed);
+    }
 #endif
 #if (PN_CHART_MASK & 2)
-    if(weights.y>0.0)deposit+=weights.y*pnChart(p.zx,dpdx.zx,dpdy.zx,tone,5.0,frameSeed);
+    if (chartWeights.y > 0.0) {
+        graphiteDeposit += chartWeights.y * pnChart(surfacePosition.zx, positionDx.zx,
+                                                    positionDy.zx, tone, 5.0, frameSeed);
+    }
 #endif
 #if (PN_CHART_MASK & 4)
-    if(weights.z>0.0)deposit+=weights.z*pnChart(p.xy,dpdx.xy,dpdy.xy,tone,9.0,frameSeed);
+    if (chartWeights.z > 0.0) {
+        graphiteDeposit += chartWeights.z * pnChart(surfacePosition.xy, positionDx.xy,
+                                                    positionDy.xy, tone, 9.0, frameSeed);
+    }
 #endif
-    float opticalDepth=-log(max(1.0-tone,0.01));
-    return 1.0-exp(-opticalDepth*deposit*1.12);
+
+    // Convert accumulated graphite to coverage. tone == 0 stays bare paper;
+    // overlapping strokes approach solid graphite as optical depth increases.
+    float opticalDepth = -log(max(1.0 - tone, 0.01));
+    return 1.0 - exp(-opticalDepth * graphiteDeposit * 1.12);
 }
 
   </script>
@@ -650,72 +917,159 @@ precision highp float;
 precision highp sampler2D;
 // A depth texture's return precision follows its SAMPLER, not the float default.
 // Lower precision here creates false discontinuities across perfectly flat faces.
-uniform sampler2D normalsTexture,depthTexture;
+uniform sampler2D normalsTexture;
+uniform sampler2D depthTexture;
 uniform vec2 resolution;
-uniform vec3 cameraRight,cameraUp,cameraForward;
+uniform vec3 cameraRight;
+uniform vec3 cameraUp;
+uniform vec3 cameraForward;
 uniform float worldPerPixel;
 uniform int cameraPerspective;
 out vec4 edge;
-ivec2 bounded(ivec2 q){return clamp(q,ivec2(0),textureSize(depthTexture,0)-1);}
-vec4 metadata(ivec2 q){vec4 m=texelFetch(normalsTexture,bounded(q),0);return vec4(m.xyz*2.-1.,m.a*4.);}
-float depth(ivec2 q){
- float d=texelFetch(depthTexture,bounded(q),0).r;
- return cameraPerspective==1?(.03*40.)/(40.-d*(40.-.03)):d*39.9+.1;
+
+ivec2 clampSamplePixel(ivec2 pixel) {
+    return clamp(pixel, ivec2(0), textureSize(depthTexture, 0) - 1);
 }
-float different(vec4 na,vec4 nb,float za,float zb,ivec2 a,ivec2 b){
- if(za>39.999&&zb>39.999)return 0.;
- if((za>39.999)!=(zb>39.999))return 1.;
- vec2 ds=vec2(bounded(b)-bounded(a))*.5*worldPerPixel;
- float pixelSize=worldPerPixel;
- float depthError=39.9*2./16777215.;
- if(cameraPerspective==1){
-  vec2 sa=((vec2(bounded(a))+.5)*.5-resolution*.5)*worldPerPixel;
-  vec2 sb=((vec2(bounded(b))+.5)*.5-resolution*.5)*worldPerPixel;
-  ds=sb*zb-sa*za;
-  pixelSize*=min(za,zb);
-  // Nonlinear depth24 error grows with distance. Include the view-ray length.
-  depthError=(za*za+zb*zb)*(40.-.03)/(.03*40.*16777215.)
-    *(1.+max(length(sa),length(sb)));
- }
- vec3 delta=cameraRight*ds.x+cameraUp*ds.y+cameraForward*(zb-za);
- float residual=max(abs(dot(na.xyz,delta)),abs(dot(nb.xyz,delta)));
- // Conservative bound for RGB8 normal quantization + depth24 rounding.
- // No division by the grazing angle and no global increase in world-space bias.
- float uncertainty=dot(abs(delta),vec3(1./255.))+depthError;
- float normalEdge=step(.18,length(na.xyz-nb.xyz));
- float planeEdge=step(.008+pixelSize*.09+uncertainty,residual);
- float materialEdge=step(.5,abs(na.a-nb.a));
- return max(max(normalEdge,planeEdge),materialEdge);
+
+vec4 readSurfaceMetadata(ivec2 pixel) {
+    vec4 encodedMetadata = texelFetch(normalsTexture, clampSamplePixel(pixel), 0);
+    return vec4(encodedMetadata.xyz * 2.0 - 1.0, encodedMetadata.a * 4.0);
 }
-void main(){
- ivec2 base=ivec2(gl_FragCoord.xy)*2;
- // Reuse a 3x3 patch (unused corner omitted): 16 fetches instead of repeatedly fetching each pair,
- // and take orientation from real edge crossings (no extra depth gradients).
- float count=0.;vec2 sum=vec2(0.);vec3 moments=vec3(0.);vec2 crossing=vec2(0.);
- vec4 m00=metadata(base+ivec2(0,0));float z00=depth(base+ivec2(0,0));
- vec4 m10=metadata(base+ivec2(1,0));float z10=depth(base+ivec2(1,0));
- vec4 m20=metadata(base+ivec2(2,0));float z20=depth(base+ivec2(2,0));
- vec4 m01=metadata(base+ivec2(0,1));float z01=depth(base+ivec2(0,1));
- vec4 m11=metadata(base+ivec2(1,1));float z11=depth(base+ivec2(1,1));
- vec4 m21=metadata(base+ivec2(2,1));float z21=depth(base+ivec2(2,1));
- vec4 m02=metadata(base+ivec2(0,2));float z02=depth(base+ivec2(0,2));
- vec4 m12=metadata(base+ivec2(1,2));float z12=depth(base+ivec2(1,2));
- {float e=different(m00,m10,z00,z10,base+ivec2(0,0),base+ivec2(1,0));vec2 q=vec2(0.000,-0.250);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(1.,0.);}
- {float e=different(m00,m01,z00,z01,base+ivec2(0,0),base+ivec2(0,1));vec2 q=vec2(-0.250,0.000);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(0.,1.);}
- {float e=different(m10,m20,z10,z20,base+ivec2(1,0),base+ivec2(2,0));vec2 q=vec2(0.500,-0.250);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(1.,0.);}
- {float e=different(m10,m11,z10,z11,base+ivec2(1,0),base+ivec2(1,1));vec2 q=vec2(0.250,0.000);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(0.,1.);}
- {float e=different(m01,m11,z01,z11,base+ivec2(0,1),base+ivec2(1,1));vec2 q=vec2(0.000,0.250);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(1.,0.);}
- {float e=different(m01,m02,z01,z02,base+ivec2(0,1),base+ivec2(0,2));vec2 q=vec2(-0.250,0.500);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(0.,1.);}
- {float e=different(m11,m21,z11,z21,base+ivec2(1,1),base+ivec2(2,1));vec2 q=vec2(0.500,0.250);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(1.,0.);}
- {float e=different(m11,m12,z11,z12,base+ivec2(1,1),base+ivec2(1,2));vec2 q=vec2(0.250,0.500);sum+=e*q;moments+=e*vec3(q.x*q.x,q.x*q.y,q.y*q.y);count+=e;crossing+=e*vec2(0.,1.);}
- if(count<.5){edge=vec4(0);return;}
- vec2 offset=sum/count;
- vec3 cov=moments/count-vec3(offset.x*offset.x,offset.x*offset.y,offset.y*offset.y);
- // Multiple subpixel crossings yield a normal from their positional covariance.
- // A lone crossing keeps its x/y finite-difference direction until the local fit.
- float angle=count>1.5?.5*atan(2.*cov.y,cov.x-cov.z+1e-8)+1.570796327:atan(crossing.y,crossing.x);
- angle=mod(angle+1.570796327,3.141592654)-1.570796327;
- edge=vec4(.5+offset*.5,angle/3.141592654+.5,min(1.,count*.5));
+
+float readLinearDepth(ivec2 pixel) {
+    float deviceDepth = texelFetch(depthTexture, clampSamplePixel(pixel), 0).r;
+    return cameraPerspective == 1 ? (0.03 * 40.0) / (40.0 - deviceDepth * (40.0 - 0.03))
+                                  : deviceDepth * 39.9 + 0.1;
+}
+
+float edgeBetweenSamples(vec4 metadataA, vec4 metadataB, float depthA, float depthB, ivec2 pixelA,
+                         ivec2 pixelB) {
+    if (depthA > 39.999 && depthB > 39.999) {
+        return 0.0;
+    }
+    if ((depthA > 39.999) != (depthB > 39.999)) {
+        return 1.0;
+    }
+    vec2 lateralDisplacement =
+        vec2(clampSamplePixel(pixelB) - clampSamplePixel(pixelA)) * 0.5 * worldPerPixel;
+    float pixelSize = worldPerPixel;
+    // 16777215 is the largest depth24 code; 39.9 is the orbit depth span.
+    float depthError = 39.9 * 2.0 / 16777215.0;
+    if (cameraPerspective == 1) {
+        vec2 rayOffsetA =
+            ((vec2(clampSamplePixel(pixelA)) + 0.5) * 0.5 - resolution * 0.5) * worldPerPixel;
+        vec2 rayOffsetB =
+            ((vec2(clampSamplePixel(pixelB)) + 0.5) * 0.5 - resolution * 0.5) * worldPerPixel;
+        lateralDisplacement = rayOffsetB * depthB - rayOffsetA * depthA;
+        pixelSize *= min(depthA, depthB);
+        // Nonlinear depth24 error grows with distance. Include the view-ray length.
+        depthError = (depthA * depthA + depthB * depthB) * (40.0 - 0.03) /
+                     (0.03 * 40.0 * 16777215.0) *
+                     (1.0 + max(length(rayOffsetA), length(rayOffsetB)));
+    }
+    vec3 worldDisplacement = cameraRight * lateralDisplacement.x +
+                             cameraUp * lateralDisplacement.y + cameraForward * (depthB - depthA);
+    float planeResidual =
+        max(abs(dot(metadataA.xyz, worldDisplacement)), abs(dot(metadataB.xyz, worldDisplacement)));
+    // Conservative bound for RGB8 normal quantization + depth24 rounding.
+    // No division by the grazing angle and no global increase in world-space bias.
+    float quantizationAllowance = dot(abs(worldDisplacement), vec3(1.0 / 255.0)) + depthError;
+    float normalEdge = step(0.18, length(metadataA.xyz - metadataB.xyz));
+    float planeEdge = step(0.008 + pixelSize * 0.09 + quantizationAllowance, planeResidual);
+    float materialEdge = step(0.5, abs(metadataA.a - metadataB.a));
+    return max(max(normalEdge, planeEdge), materialEdge);
+}
+
+// Accumulate subpixel crossings before estimating the local edge direction.
+// secondMoments packs (xx, xy, yy); positions are relative to the output pixel.
+struct EdgeCrossings {
+    float count;
+    vec2 positionSum;
+    vec3 secondMoments;
+    vec2 directionSum;
+};
+
+void addCrossing(inout EdgeCrossings crossings, float strength, vec2 offset, vec2 direction) {
+    crossings.positionSum += strength * offset;
+    crossings.secondMoments +=
+        strength * vec3(offset.x * offset.x, offset.x * offset.y, offset.y * offset.y);
+    crossings.count += strength;
+    crossings.directionSum += strength * direction;
+}
+
+void main() {
+    // Metadata is 2x output resolution. Suffixes below are (x, y) grid offsets.
+    ivec2 patchOrigin = ivec2(gl_FragCoord.xy) * 2;
+    // Reuse a 3x3 patch (unused corner omitted): 16 fetches instead of repeatedly fetching each pair,
+    // and take orientation from real edge crossings (no extra depth gradients).
+    EdgeCrossings crossings = EdgeCrossings(0.0, vec2(0.0), vec3(0.0), vec2(0.0));
+    vec4 metadata00 = readSurfaceMetadata(patchOrigin + ivec2(0, 0));
+    float depth00 = readLinearDepth(patchOrigin + ivec2(0, 0));
+    vec4 metadata10 = readSurfaceMetadata(patchOrigin + ivec2(1, 0));
+    float depth10 = readLinearDepth(patchOrigin + ivec2(1, 0));
+    vec4 metadata20 = readSurfaceMetadata(patchOrigin + ivec2(2, 0));
+    float depth20 = readLinearDepth(patchOrigin + ivec2(2, 0));
+    vec4 metadata01 = readSurfaceMetadata(patchOrigin + ivec2(0, 1));
+    float depth01 = readLinearDepth(patchOrigin + ivec2(0, 1));
+    vec4 metadata11 = readSurfaceMetadata(patchOrigin + ivec2(1, 1));
+    float depth11 = readLinearDepth(patchOrigin + ivec2(1, 1));
+    vec4 metadata21 = readSurfaceMetadata(patchOrigin + ivec2(2, 1));
+    float depth21 = readLinearDepth(patchOrigin + ivec2(2, 1));
+    vec4 metadata02 = readSurfaceMetadata(patchOrigin + ivec2(0, 2));
+    float depth02 = readLinearDepth(patchOrigin + ivec2(0, 2));
+    vec4 metadata12 = readSurfaceMetadata(patchOrigin + ivec2(1, 2));
+    float depth12 = readLinearDepth(patchOrigin + ivec2(1, 2));
+
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata00, metadata10, depth00, depth10,
+                                   patchOrigin + ivec2(0, 0), patchOrigin + ivec2(1, 0)),
+                vec2(0.000, -0.250), vec2(1.0, 0.0));
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata00, metadata01, depth00, depth01,
+                                   patchOrigin + ivec2(0, 0), patchOrigin + ivec2(0, 1)),
+                vec2(-0.250, 0.000), vec2(0.0, 1.0));
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata10, metadata20, depth10, depth20,
+                                   patchOrigin + ivec2(1, 0), patchOrigin + ivec2(2, 0)),
+                vec2(0.500, -0.250), vec2(1.0, 0.0));
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata10, metadata11, depth10, depth11,
+                                   patchOrigin + ivec2(1, 0), patchOrigin + ivec2(1, 1)),
+                vec2(0.250, 0.000), vec2(0.0, 1.0));
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata01, metadata11, depth01, depth11,
+                                   patchOrigin + ivec2(0, 1), patchOrigin + ivec2(1, 1)),
+                vec2(0.000, 0.250), vec2(1.0, 0.0));
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata01, metadata02, depth01, depth02,
+                                   patchOrigin + ivec2(0, 1), patchOrigin + ivec2(0, 2)),
+                vec2(-0.250, 0.500), vec2(0.0, 1.0));
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata11, metadata21, depth11, depth21,
+                                   patchOrigin + ivec2(1, 1), patchOrigin + ivec2(2, 1)),
+                vec2(0.500, 0.250), vec2(1.0, 0.0));
+    addCrossing(crossings,
+                edgeBetweenSamples(metadata11, metadata12, depth11, depth12,
+                                   patchOrigin + ivec2(1, 1), patchOrigin + ivec2(1, 2)),
+                vec2(0.250, 0.500), vec2(0.0, 1.0));
+
+    // Empty pixels have no descriptor. Otherwise fit orientation to crossings.
+    if (crossings.count < 0.5) {
+        edge = vec4(0);
+        return;
+    }
+    vec2 meanOffset = crossings.positionSum / crossings.count;
+    vec3 covariance =
+        crossings.secondMoments / crossings.count -
+        vec3(meanOffset.x * meanOffset.x, meanOffset.x * meanOffset.y, meanOffset.y * meanOffset.y);
+    // Multiple subpixel crossings yield a normal from their positional covariance.
+    // A lone crossing keeps its x/y finite-difference direction until the local fit.
+    float angle =
+        crossings.count > 1.5
+            ? 0.5 * atan(2.0 * covariance.y, covariance.x - covariance.z + 1e-8) + 1.570796327
+            : atan(crossings.directionSum.y, crossings.directionSum.x);
+    angle = mod(angle + 1.570796327, 3.141592654) - 1.570796327;
+    edge = vec4(0.5 + meanOffset * 0.5, angle / 3.141592654 + 0.5, min(1.0, crossings.count * 0.5));
 }
 
   </script>
@@ -723,254 +1077,434 @@ void main(){
 #version 300 es
 precision highp float;
 precision highp sampler2D;
-uniform sampler2D sceneTexture,edgeSeeds;
+uniform sampler2D sceneTexture;
+uniform sampler2D edgeSeeds;
 uniform vec2 resolution;
 uniform int outlineMode;
-uniform float drawing,jitter;
+uniform float drawing;
+uniform float jitter;
 out vec4 color;
 // Analytic nested hatching research prototype, 2026. SPDX-License-Identifier: MIT
 // Conceptual lineage: Rune Skovbo Johansen's Surface-Stable Fractal Dithering
 // and Praun et al., Real-Time Hatching (2001). Independently written code.
 
-// Antiderivative of a unit-period stripe of full width w, centered on integers.
-float fhIntegral(float x, float w) {
-    float q = x + 0.5 * w;
-    return floor(q) * w + min(fract(q), w);
+// Antiderivative of a unit-period stripe of full width stripeWidth, centered on integers.
+float fhIntegral(float phase, float stripeWidth) {
+    float shiftedPhase = phase + 0.5 * stripeWidth;
+    return floor(shiftedPhase) * stripeWidth + min(fract(shiftedPhase), stripeWidth);
 }
 
 // Exact integral for a 1D box footprint; approximation to a 2D pixel filter.
 // Reducing phase BEFORE the integral avoids subtracting two large integrals.
 float fhStripe(float phase, float width, float footprint) {
-    float x = fract(phase);
-    float w = clamp(width, 0.0, 1.0);
-    float p = max(footprint, 1e-6);
-    return clamp((fhIntegral(x + p * 0.5, w)
-                - fhIntegral(x - p * 0.5, w)) / p, 0.0, 1.0);
+    float wrappedPhase = fract(phase);
+    float stripeWidth = clamp(width, 0.0, 1.0);
+    float pixelFootprint = max(footprint, 1e-6);
+    return clamp((fhIntegral(wrappedPhase + pixelFootprint * 0.5, stripeWidth) -
+                  fhIntegral(wrappedPhase - pixelFootprint * 0.5, stripeWidth)) /
+                     pixelFootprint,
+                 0.0, 1.0);
 }
 
 // phase is a continuous, SURFACE-ATTACHED scalar. Derivatives must be taken
 // BEFORE floor/fract/LOD selection, in uniform fragment control flow.
-// gapPx is measured in render-target pixels. ink is desired area coverage.
-float fhFamilyState(float phase, vec2 gradient, vec2 stateGradient, float ink, float gapPx) {
-    float g = max(length(stateGradient), 1e-10);
-    float lod = clamp(-log2(max(gapPx, 2.0) * g), -20.0, 20.0);
-    float level = floor(lod);
-    float subdivision = exp2(fract(lod));
-    float birth = subdivision - 1.0;
-    float frequency = exp2(level);
-    float u = phase * frequency;
-    float footprint = max((abs(gradient.x) + abs(gradient.y)) * frequency, 1e-6);
-    float parentWidth = clamp(ink, 0.0, 1.0) / subdivision;
-    float childWidth = parentWidth * birth;
-    return clamp(fhStripe(u, parentWidth, footprint)
-               + fhStripe(u - 0.5, childWidth, footprint), 0.0, 1.0);
+// spacingPixels is measured in output pixels. inkCoverage is desired area coverage.
+float fhFamilyState(float phase, vec2 phaseGradient, vec2 scaleGradient, float inkCoverage,
+                    float spacingPixels) {
+    float phasePerPixel = max(length(scaleGradient), 1e-10);
+    float continuousOctave = clamp(-log2(max(spacingPixels, 2.0) * phasePerPixel), -20.0, 20.0);
+    float parentOctave = floor(continuousOctave);
+    float subdivision = exp2(fract(continuousOctave));
+    float childActivation = subdivision - 1.0;
+    float linesPerUnit = exp2(parentOctave);
+    float parentCoordinate = phase * linesPerUnit;
+    float footprint = max((abs(phaseGradient.x) + abs(phaseGradient.y)) * linesPerUnit, 1e-6);
+    // Share the requested coverage between the existing grid and new lines.
+    float parentWidth = clamp(inkCoverage, 0.0, 1.0) / subdivision;
+    float childWidth = parentWidth * childActivation;
+    return clamp(fhStripe(parentCoordinate, parentWidth, footprint) +
+                     fhStripe(parentCoordinate - 0.5, childWidth, footprint),
+                 0.0, 1.0);
 }
 
-// Separate held drawing-state metric from the live anti-aliasing footprint.
-float fhFamilyGrad(float phase, vec2 gradient, float ink, float gapPx)
-{
-    return fhFamilyState(phase, gradient, gradient, ink, gapPx);
+// Convenience entry points: use the same gradient for scale and filtering.
+float fhFamilyGrad(float phase, vec2 phaseGradient, float inkCoverage, float spacingPixels) {
+    return fhFamilyState(phase, phaseGradient, phaseGradient, inkCoverage, spacingPixels);
 }
 
-float fhFamily(float phase, float ink, float gapPx) {
-    return fhFamilyGrad(phase, vec2(dFdx(phase), dFdy(phase)), ink, gapPx);
+float fhFamily(float phase, float inkCoverage, float spacingPixels) {
+    return fhFamilyGrad(phase, vec2(dFdx(phase), dFdy(phase)), inkCoverage, spacingPixels);
 }
 
 // Under locally independent crossing phases, union coverage equals ink.
 // On curved charts / correlated phases this is a local tone approximation.
-float fhCross(vec2 phase, float ink, float gapPx) {
-    float a = min(clamp(ink, 0.0, 1.0), 0.46);
-    float b = (clamp(ink, 0.0, 1.0) - a) / (1.0 - a);
-    float first = fhFamily(phase.x, a, gapPx);
-    float second = fhFamily(phase.y, b, gapPx);
-    return first + second - first * second;
+// 0.46 caps the first direction; the second supplies the remaining darkness.
+float fhCross(vec2 phase, float inkCoverage, float spacingPixels) {
+    float primaryCoverage = min(clamp(inkCoverage, 0.0, 1.0), 0.46);
+    float crossCoverage =
+        (clamp(inkCoverage, 0.0, 1.0) - primaryCoverage) / (1.0 - primaryCoverage);
+    float primaryInk = fhFamily(phase.x, primaryCoverage, spacingPixels);
+    float crossInk = fhFamily(phase.y, crossCoverage, spacingPixels);
+    return primaryInk + crossInk - primaryInk * crossInk;
 }
 
 // Optional compile-time chart support; default retains the general shader.
 #ifndef PN_CHART_MASK
 #define PN_CHART_MASK 7
 #endif
-// Nested pencil marks, 2026. MIT. See RESEARCH.md for provenance and limits.
-// Parent/child centers retain the dyadic ancestry of the original experiment.
+// Nested pencil marks. MIT. See docs/hatching.md and docs/references.md.
+// Read from pnPencil down the call chain: chart -> family -> stroke -> line key.
+// Position and derivatives use the same surface coordinates. Pixel distances
+// refer to the final output resolution, including when shading is supersampled.
 
-float pnHash(vec2 p) {
-    vec3 q=fract(vec3(p.xyx)*vec3(0.1031,0.1030,0.0973));
-    q+=dot(q,q.yzx+33.33);
-    return fract((q.x+q.y)*q.z);
-}
-float pnNoise(vec2 p) {
-    vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
-    return mix(mix(pnHash(i),pnHash(i+vec2(1,0)),f.x),
-               mix(pnHash(i+vec2(0,1)),pnHash(i+vec2(1,1)),f.x),f.y);
+float pnHash(vec2 coordinate) {
+    vec3 hashState = fract(vec3(coordinate.xyx) * vec3(0.1031, 0.1030, 0.0973));
+    hashState += dot(hashState, hashState.yzx + 33.33);
+    return fract((hashState.x + hashState.y) * hashState.z);
 }
 
-// Reducing the dyadic fraction (index / 2^level) gives a persistent line ID.
+float pnNoise(vec2 coordinate) {
+    vec2 cell = floor(coordinate);
+    vec2 blendWeight = fract(coordinate);
+    blendWeight = blendWeight * blendWeight * (3.0 - 2.0 * blendWeight);
+    return mix(mix(pnHash(cell), pnHash(cell + vec2(1, 0)), blendWeight.x),
+               mix(pnHash(cell + vec2(0, 1)), pnHash(cell + vec2(1, 1)), blendWeight.x),
+               blendWeight.y);
+}
+
+// Reducing the dyadic fraction (lineIndex / 2^octave) gives a persistent line ID.
 // Five bit tests find trailing zero count, including negative indices.
-vec2 pnLineKey(float index,float level) {
-    int j=int(abs(index));
-    if(j==0)return vec2(0,-12);
-    int count=0;
-    if((j&65535)==0){j>>=16;count+=16;}
-    if((j&255)==0){j>>=8;count+=8;}
-    if((j&15)==0){j>>=4;count+=4;}
-    if((j&3)==0){j>>=2;count+=2;}
-    if((j&1)==0){j>>=1;count+=1;}
-    return vec2(float(j)*sign(index),level-float(count));
+vec2 pnLineKey(float lineIndex, float octave) {
+    int reducedIndex = int(abs(lineIndex));
+    if (reducedIndex == 0) {
+        return vec2(0, -12);
+    }
+    int removedDoublings = 0;
+    if ((reducedIndex & 65535) == 0) {
+        reducedIndex >>= 16;
+        removedDoublings += 16;
+    }
+    if ((reducedIndex & 255) == 0) {
+        reducedIndex >>= 8;
+        removedDoublings += 8;
+    }
+    if ((reducedIndex & 15) == 0) {
+        reducedIndex >>= 4;
+        removedDoublings += 4;
+    }
+    if ((reducedIndex & 3) == 0) {
+        reducedIndex >>= 2;
+        removedDoublings += 2;
+    }
+    if ((reducedIndex & 1) == 0) {
+        reducedIndex >>= 1;
+        removedDoublings += 1;
+    }
+    return vec2(float(reducedIndex) * sign(lineIndex), octave - float(removedDoublings));
 }
 
 // A finite pressure stroke attached to one persistent centerline. The length
 // and gap structure depend on its BIRTH level, never its current octave label.
-float pnStroke(float across,float along,float level,float index,float width,
-               float activation,float acrossRate,float alongRate,float frameSeed,float familySeed) {
-    float frequency=exp2(level);
-    vec2 key=pnLineKey(index,level)+vec2(familySeed*17.0,0);
-    float r=pnHash(key+1.13), r2=pnHash(key+31.77);
-    float birthFrequency=exp2(key.y);
-    float segmentRate=birthFrequency/(4.5+6.0*r);
-    float t=along*segmentRate+r2*19.0;
-    float cell=floor(t), f=fract(t);
-    float segment=pnHash(key+vec2(cell,13.71));
-    float birthRank=0.0001+0.9998*pnHash(key+vec2(cell+31.0,73.9));
-    float exists=step(birthRank,activation);
+// across/along coordinates are measured in the chart's surface units.
+// nominalWidth is a fraction of the current line spacing; birthActivation is
+// the fraction of eligible child segments. The two rates are units per pixel.
+float pnStroke(float acrossCoordinate, float alongCoordinate, float octave, float lineIndex,
+               float nominalWidth, float birthActivation, float acrossPerPixel, float alongPerPixel,
+               float frameSeed, float familySeed) {
+    // Persistent line identity controls length, gaps and the birth threshold.
+    float linesPerUnit = exp2(octave);
+    vec2 lineKey = pnLineKey(lineIndex, octave) + vec2(familySeed * 17.0, 0);
+    float shapeRandom = pnHash(lineKey + 1.13);
+    float phaseRandom = pnHash(lineKey + 31.77);
+    float birthLinesPerUnit = exp2(lineKey.y);
+    float segmentsPerUnit = birthLinesPerUnit / (4.5 + 6.0 * shapeRandom);
+    float segmentCoordinate = alongCoordinate * segmentsPerUnit + phaseRandom * 19.0;
+    float segmentIndex = floor(segmentCoordinate);
+    float segmentFraction = fract(segmentCoordinate);
+    float segmentRandom = pnHash(lineKey + vec2(segmentIndex, 13.71));
+    float birthRank = 0.0001 + 0.9998 * pnHash(lineKey + vec2(segmentIndex + 31.0, 73.9));
+    float isBorn = step(birthRank, birthActivation);
     // Rejected children contribute exactly zero; no pressure/noise work needed.
-    if(exists==0.0)return 0.0;
-    float fwidthT=max(alongRate*segmentRate,0.001);
-    float tip=min(f,1.0-f);
-    float mask=smoothstep(0.045,0.14+0.12*segment,tip);
+    if (isBorn == 0.0) {
+        return 0.0;
+    }
+
+    // Taper each end, then average away gaps that are smaller than a pixel.
+    float segmentFootprint = max(alongPerPixel * segmentsPerUnit, 0.001);
+    float distanceToTip = min(segmentFraction, 1.0 - segmentFraction);
+    float tipCoverage = smoothstep(0.045, 0.14 + 0.12 * segmentRandom, distanceToTip);
     // If the segment is subpixel, use its approximate mean instead of flicker.
-    mask=mix(mask,0.73,smoothstep(0.25,0.8,fwidthT));
-    float pressure=(0.62+0.50*r)*(0.72+0.28*sin(3.141593*f));
-    float jitter=pnHash(key+vec2(frameSeed*0.719,91.0))-0.5;
-    float wobble=sin(t*6.283185+r*6.0)+0.4*sin(t*17.0+r2*9.0);
+    tipCoverage = mix(tipCoverage, 0.73, smoothstep(0.25, 0.8, segmentFootprint));
+
+    // Shape and drawing variation stay attached to this line's key.
+    float strokePressure =
+        (0.62 + 0.50 * shapeRandom) * (0.72 + 0.28 * sin(3.141593 * segmentFraction));
+    float frameOffset = pnHash(lineKey + vec2(frameSeed * 0.719, 91.0)) - 0.5;
+    float centerlineWave = sin(segmentCoordinate * 6.283185 + shapeRandom * 6.0) +
+                           0.4 * sin(segmentCoordinate * 17.0 + phaseRandom * 9.0);
     // Small screen-space displacement, seeded by persistent line identity.
     // It is unchanged by parent/child relabeling at the same viewing scale.
-    float offset=(0.35*wobble+0.75*jitter)*acrossRate*frequency;
-    float distance=across*frequency-index+offset;
-    float actualWidth=width*pressure*(0.76+0.24*mask);
-    float footprint=max(acrossRate*frequency,0.00001);
-    float core=clamp((actualWidth*0.5-abs(distance))/footprint+0.5,0.0,1.0);
-    if(core==0.0)return 0.0;
-    float newPressure=0.78+0.44*pnHash(key+vec2(frameSeed*0.33,cell+101.0));
-    return core*mask*newPressure*exists;
+    float centerlineOffset =
+        (0.35 * centerlineWave + 0.75 * frameOffset) * acrossPerPixel * linesPerUnit;
+    float distanceToLine = acrossCoordinate * linesPerUnit - lineIndex + centerlineOffset;
+
+    // Convert distance to antialiased coverage, then apply taper and drawing pressure.
+    float strokeWidth = nominalWidth * strokePressure * (0.76 + 0.24 * tipCoverage);
+    float lineFootprint = max(acrossPerPixel * linesPerUnit, 0.00001);
+    float lineCoverage =
+        clamp((strokeWidth * 0.5 - abs(distanceToLine)) / lineFootprint + 0.5, 0.0, 1.0);
+    if (lineCoverage == 0.0) {
+        return 0.0;
+    }
+    float framePressure =
+        0.78 + 0.44 * pnHash(lineKey + vec2(frameSeed * 0.33, segmentIndex + 101.0));
+    return lineCoverage * tipCoverage * framePressure * isBorn;
 }
 
-float pnFamily(vec2 uv,vec2 dx,vec2 dy,float angle,float gap,float seed,float frameSeed) {
-    vec2 a=vec2(cos(angle),sin(angle)),b=vec2(-a.y,a.x);
-    float across=dot(uv,a)+seed*0.173;
-    float along=dot(uv,b);
-    float acrossRate=max(length(vec2(dot(dx,a),dot(dy,a))),1e-9);
-    float alongRate=max(length(vec2(dot(dx,b),dot(dy,b))),1e-9);
-    float lod=clamp(-log2(gap*acrossRate),-16.0,16.0);
-    float level=floor(lod), sub=exp2(fract(lod)), birth=sub-1.0;
-    float u=across*exp2(level);
-    float parentIndex=floor(u+0.5), childIndex=2.0*floor(u)+1.0;
-    float parent=pnStroke(across,along,level,parentIndex,0.21/sub,1.0,
-                          acrossRate,alongRate,frameSeed,seed);
-    float child=pnStroke(across,along,level+1.0,childIndex,0.42/sub,birth,
-                         acrossRate,alongRate,frameSeed,seed);
-    return min(1.0,parent+child);
+// A family is a set of parallel strokes. The parent grid remains in place;
+// odd sites in the next finer grid become the new children as spacing changes.
+float pnFamily(vec2 chartPosition, vec2 chartDx, vec2 chartDy, float angleRadians,
+               float spacingPixels, float familySeed, float frameSeed) {
+    vec2 acrossDirection = vec2(cos(angleRadians), sin(angleRadians));
+    vec2 alongDirection = vec2(-acrossDirection.y, acrossDirection.x);
+    float acrossCoordinate = dot(chartPosition, acrossDirection) + familySeed * 0.173;
+    float alongCoordinate = dot(chartPosition, alongDirection);
+    float acrossPerPixel =
+        max(length(vec2(dot(chartDx, acrossDirection), dot(chartDy, acrossDirection))), 1e-9);
+    float alongPerPixel =
+        max(length(vec2(dot(chartDx, alongDirection), dot(chartDy, alongDirection))), 1e-9);
+
+    // Keep spacing near spacingPixels, including between integer octaves.
+    float continuousOctave = clamp(-log2(spacingPixels * acrossPerPixel), -16.0, 16.0);
+    float parentOctave = floor(continuousOctave);
+    float subdivision = exp2(fract(continuousOctave));
+    float childActivation = subdivision - 1.0;
+
+    // Evaluate the nearest parent and the child between two parents.
+    float parentCoordinate = acrossCoordinate * exp2(parentOctave);
+    float parentIndex = floor(parentCoordinate + 0.5);
+    float childIndex = 2.0 * floor(parentCoordinate) + 1.0;
+    float parentInk =
+        pnStroke(acrossCoordinate, alongCoordinate, parentOctave, parentIndex, 0.21 / subdivision,
+                 1.0, acrossPerPixel, alongPerPixel, frameSeed, familySeed);
+    float childInk = pnStroke(acrossCoordinate, alongCoordinate, parentOctave + 1.0, childIndex,
+                              0.42 / subdivision, childActivation, acrossPerPixel, alongPerPixel,
+                              frameSeed, familySeed);
+    return min(1.0, parentInk + childInk);
 }
 
-float pnChart(vec2 uv,vec2 dx,vec2 dy,float tone,float chartSeed,float frameSeed) {
+// One planar chart contributes three stroke directions plus broad graphite.
+// The result is graphite deposit, not yet a final [0, 1] ink coverage.
+float pnChart(vec2 chartPosition, vec2 chartDx, vec2 chartDy, float tone, float chartSeed,
+              float frameSeed) {
     // A view-independent, smooth chart deformation: no latitude/longitude pole.
-    vec2 q=uv+0.024*vec2(sin(uv.y*4.1+chartSeed),sin(uv.x*3.3-chartSeed));
-    vec2 warpX=vec2(1.0,0.0792*cos(uv.x*3.3-chartSeed));
-    vec2 warpY=vec2(0.0984*cos(uv.y*4.1+chartSeed),1.0);
-    vec2 gx=warpX*dx.x+warpY*dx.y, gy=warpX*dy.x+warpY*dy.y;
-    float first=pnFamily(q,gx,gy,-0.64,3.8,chartSeed+1.0,frameSeed);
-    float crossAmount=smoothstep(0.18,0.68,tone);
-    float second=0.0;
-    if(crossAmount>0.0)second=pnFamily(q,gx,gy,0.26,3.15,chartSeed+4.0,frameSeed);
-    float third=pnFamily(q,gx,gy,-0.83,2.5,chartSeed+9.0,frameSeed);
-    float broad=0.83+0.25*pnNoise(q*18.0+chartSeed);
-    return 0.25*broad + 2.9*first + 2.5*second*crossAmount + 1.3*third;
+    vec2 warpedPosition = chartPosition + 0.024 * vec2(sin(chartPosition.y * 4.1 + chartSeed),
+                                                       sin(chartPosition.x * 3.3 - chartSeed));
+    // Columns of the warp Jacobian; 0.0792 = 0.024 * 3.3,
+    // and 0.0984 = 0.024 * 4.1. Apply it to both pixel derivatives.
+    vec2 warpDerivativeX = vec2(1.0, 0.0792 * cos(chartPosition.x * 3.3 - chartSeed));
+    vec2 warpDerivativeY = vec2(0.0984 * cos(chartPosition.y * 4.1 + chartSeed), 1.0);
+    vec2 warpedDx = warpDerivativeX * chartDx.x + warpDerivativeY * chartDx.y;
+    vec2 warpedDy = warpDerivativeX * chartDy.x + warpDerivativeY * chartDy.y;
+
+    // Crossing strokes build darker tones without rotating the surface chart.
+    float primaryInk =
+        pnFamily(warpedPosition, warpedDx, warpedDy, -0.64, 3.8, chartSeed + 1.0, frameSeed);
+    float crossAmount = smoothstep(0.18, 0.68, tone);
+    float crossInk = 0.0;
+    if (crossAmount > 0.0) {
+        crossInk =
+            pnFamily(warpedPosition, warpedDx, warpedDy, 0.26, 3.15, chartSeed + 4.0, frameSeed);
+    }
+    float detailInk =
+        pnFamily(warpedPosition, warpedDx, warpedDy, -0.83, 2.5, chartSeed + 9.0, frameSeed);
+    float broadDeposit = 0.83 + 0.25 * pnNoise(warpedPosition * 18.0 + chartSeed);
+    return 0.25 * broadDeposit + 2.9 * primaryInk + 2.5 * crossInk * crossAmount + 1.3 * detailInk;
 }
 
 // A partition of unity over three well-conditioned planar charts. Pole-prone
 // charts lose support before their projected coordinate system collapses.
-float pnPencil(vec3 p,vec3 normal,vec3 dpdx,vec3 dpdy,float tone,float frameSeed) {
+float pnPencil(vec3 surfacePosition, vec3 surfaceNormal, vec3 positionDx, vec3 positionDy,
+               float tone, float frameSeed) {
     // Derivatives are supplied by the caller before this branch.
     // Lit paper and zero-weight charts have analytically zero contributions.
-    if(tone<=0.0)return 0.0;
-    float deposit=0.0;
-    vec3 weights=pow(max(abs(normal)-vec3(0.22),vec3(0)),vec3(4));
-    weights/=max(dot(weights,vec3(1)),1e-6);
+    if (tone <= 0.0) {
+        return 0.0;
+    }
+    float graphiteDeposit = 0.0;
+    vec3 chartWeights = pow(max(abs(surfaceNormal) - vec3(0.22), vec3(0)), vec3(4));
+    chartWeights /= max(dot(chartWeights, vec3(1)), 1e-6);
 #if (PN_CHART_MASK & 1)
-    if(weights.x>0.0)deposit+=weights.x*pnChart(p.yz,dpdx.yz,dpdy.yz,tone,1.0,frameSeed);
+    if (chartWeights.x > 0.0) {
+        graphiteDeposit += chartWeights.x * pnChart(surfacePosition.yz, positionDx.yz,
+                                                    positionDy.yz, tone, 1.0, frameSeed);
+    }
 #endif
 #if (PN_CHART_MASK & 2)
-    if(weights.y>0.0)deposit+=weights.y*pnChart(p.zx,dpdx.zx,dpdy.zx,tone,5.0,frameSeed);
+    if (chartWeights.y > 0.0) {
+        graphiteDeposit += chartWeights.y * pnChart(surfacePosition.zx, positionDx.zx,
+                                                    positionDy.zx, tone, 5.0, frameSeed);
+    }
 #endif
 #if (PN_CHART_MASK & 4)
-    if(weights.z>0.0)deposit+=weights.z*pnChart(p.xy,dpdx.xy,dpdy.xy,tone,9.0,frameSeed);
+    if (chartWeights.z > 0.0) {
+        graphiteDeposit += chartWeights.z * pnChart(surfacePosition.xy, positionDx.xy,
+                                                    positionDy.xy, tone, 9.0, frameSeed);
+    }
 #endif
-    float opticalDepth=-log(max(1.0-tone,0.01));
-    return 1.0-exp(-opticalDepth*deposit*1.12);
+
+    // Convert accumulated graphite to coverage. tone == 0 stays bare paper;
+    // overlapping strokes approach solid graphite as optical depth increases.
+    float opticalDepth = -log(max(1.0 - tone, 0.01));
+    return 1.0 - exp(-opticalDepth * graphiteDeposit * 1.12);
 }
 
+// Descriptor layout: RG = local pixel offset * 0.5 + 0.5,
+// B = unoriented normal angle / pi + 0.5, A = confidence (zero means empty).
+// Weighted second moments and covariance store (xx, xy, yy).
 // Fit each occupied edge-seed pixel ONCE. The compose pass only finds the
 // nearest fitted descriptor. All distances are in native screen pixels.
-vec4 poSeed(ivec2 q){return texelFetch(edgeSeeds,clamp(q,ivec2(0),textureSize(edgeSeeds,0)-1),0);}
-vec2 poNormal(vec4 e){float a=(e.b-.5)*3.14159265;return vec2(cos(a),sin(a));}
-vec2 poOffset(vec4 e){return (e.rg-.5)*2.;}
+vec4 poSeed(ivec2 pixel) {
+    return texelFetch(edgeSeeds, clamp(pixel, ivec2(0), textureSize(edgeSeeds, 0) - 1), 0);
+}
+
+vec2 poNormal(vec4 descriptor) {
+    float normalAngle = (descriptor.b - 0.5) * 3.14159265;
+    return vec2(cos(normalAngle), sin(normalAngle));
+}
+
+vec2 poOffset(vec4 descriptor) {
+    return (descriptor.rg - 0.5) * 2.0;
+}
 #ifdef OUTLINE_FIT_PASS
-vec4 poFitAtSeed(ivec2 center){
- vec4 seed=poSeed(center);if(seed.a<.01)return vec4(0.);
- vec2 anchor=poOffset(seed),reference=poNormal(seed);
- float total=0.;vec2 sum=vec2(0.);vec3 moments=vec3(0.);
- for(int y=-3;y<=3;y++)for(int x=-3;x<=3;x++){
-  vec4 e=poSeed(center+ivec2(x,y));if(e.a<.01)continue;
-  vec2 q=vec2(x,y)+poOffset(e);
-  // Angle comparison for unoriented lines avoids sin/cos in the neighborhood.
-  float angle=abs(e.b-seed.b);angle=min(angle,1.-angle);
-  float agreement=1.-smoothstep(.12,.27,angle);
-  float track=1.-smoothstep(.65,1.35,abs(dot(q-anchor,reference)));
-  float weight=e.a*agreement*track/(1.+dot(q,q)/12.);
-  total+=weight;sum+=q*weight;moments+=vec3(q.x*q.x,q.x*q.y,q.y*q.y)*weight;
- }
- if(total<.01)return seed;
- vec2 mean=sum/total;vec3 cov=moments/total-vec3(mean.x*mean.x,mean.x*mean.y,mean.y*mean.y);
- float theta=.5*atan(2.*cov.y,cov.x-cov.z+1e-8);
- vec2 normal=vec2(-sin(theta),cos(theta));if(dot(normal,reference)<0.)normal=-normal;
- float coherence=length(vec2(cov.x-cov.z,2.*cov.y))/max(cov.x+cov.z,.0001);
- float fit=smoothstep(.5,.88,coherence)*smoothstep(.7,2.,total);
- normal=normalize(mix(reference,normal,fit));mean=mix(anchor,mean,fit);
- // Anchor the descriptor near its originating sample, never extend/bridge gaps.
- vec2 offset=anchor+normal*clamp(dot(mean-anchor,normal),-.45,.45);
- float angle=mod(atan(normal.y,normal.x)+1.570796327,3.141592654)-1.570796327;
- return vec4(.5+offset*.5,angle/3.141592654+.5,seed.a);
+vec4 poFitAtSeed(ivec2 centerPixel) {
+    vec4 centerSeed = poSeed(centerPixel);
+    if (centerSeed.a < 0.01) {
+        return vec4(0.0);
+    }
+    vec2 seedOffset = poOffset(centerSeed);
+    vec2 seedNormal = poNormal(centerSeed);
+
+    // Collect nearby crossings that agree with this seed's direction and contour.
+    float totalWeight = 0.0;
+    vec2 weightedPosition = vec2(0.0);
+    vec3 weightedMoments = vec3(0.0);
+    for (int y = -3; y <= 3; y++) {
+        for (int x = -3; x <= 3; x++) {
+            vec4 neighborSeed = poSeed(centerPixel + ivec2(x, y));
+            if (neighborSeed.a < 0.01) {
+                continue;
+            }
+            vec2 neighborOffset = vec2(x, y) + poOffset(neighborSeed);
+            // Angle comparison for unoriented lines avoids sin/cos in the neighborhood.
+            float angleDifference = abs(neighborSeed.b - centerSeed.b);
+            angleDifference = min(angleDifference, 1.0 - angleDifference);
+            float directionAgreement = 1.0 - smoothstep(0.12, 0.27, angleDifference);
+            float sameContourWeight =
+                1.0 - smoothstep(0.65, 1.35, abs(dot(neighborOffset - seedOffset, seedNormal)));
+            float weight = neighborSeed.a * directionAgreement * sameContourWeight /
+                           (1.0 + dot(neighborOffset, neighborOffset) / 12.0);
+            totalWeight += weight;
+            weightedPosition += neighborOffset * weight;
+            weightedMoments +=
+                vec3(neighborOffset.x * neighborOffset.x, neighborOffset.x * neighborOffset.y,
+                     neighborOffset.y * neighborOffset.y) *
+                weight;
+        }
+    }
+    if (totalWeight < 0.01) {
+        return centerSeed;
+    }
+    vec2 meanOffset = weightedPosition / totalWeight;
+    vec3 covariance =
+        weightedMoments / totalWeight -
+        vec3(meanOffset.x * meanOffset.x, meanOffset.x * meanOffset.y, meanOffset.y * meanOffset.y);
+
+    // The major covariance axis is the fitted tangent. Its perpendicular is the
+    // line normal; align its sign with the seed before blending.
+    float tangentAngle = 0.5 * atan(2.0 * covariance.y, covariance.x - covariance.z + 1e-8);
+    vec2 fittedNormal = vec2(-sin(tangentAngle), cos(tangentAngle));
+    if (dot(fittedNormal, seedNormal) < 0.0) {
+        fittedNormal = -fittedNormal;
+    }
+
+    // A clear dominant axis and enough supporting weight justify a fitted line.
+    // Otherwise keep the original seed, especially at corners and junctions.
+    float lineCoherence = length(vec2(covariance.x - covariance.z, 2.0 * covariance.y)) /
+                          max(covariance.x + covariance.z, 0.0001);
+    float fitConfidence = smoothstep(0.5, 0.88, lineCoherence) * smoothstep(0.7, 2.0, totalWeight);
+    fittedNormal = normalize(mix(seedNormal, fittedNormal, fitConfidence));
+    meanOffset = mix(seedOffset, meanOffset, fitConfidence);
+    // Anchor the descriptor near its originating sample, never extend/bridge gaps.
+    vec2 fittedOffset =
+        seedOffset + fittedNormal * clamp(dot(meanOffset - seedOffset, fittedNormal), -0.45, 0.45);
+    float encodedNormalAngle =
+        mod(atan(fittedNormal.y, fittedNormal.x) + 1.570796327, 3.141592654) - 1.570796327;
+    return vec4(0.5 + fittedOffset * 0.5, encodedNormalAngle / 3.141592654 + 0.5, centerSeed.a);
 }
 #else
-float poFittedInk(vec2 pixel,float drawing,float jitter,int mode){
- // One coarse alpha tap rejects blank areas. At mip 3, bilinear support
- // extends at least four native pixels, conservatively covering the 5x5 search.
- // Mip alpha is occupancy only; descriptor positions always come from mip 0.
- float occupied=textureLod(edgeSeeds,pixel/resolution,3.).a;
- if(occupied<=0.)return 0.;
- ivec2 center=ivec2(pixel);float closest=1e9;vec2 anchor=vec2(0);vec4 best=vec4(0);
- for(int y=-2;y<=2;y++)for(int x=-2;x<=2;x++){
-  vec4 e=poSeed(center+ivec2(x,y));vec2 q=vec2(x,y)+poOffset(e);float d=dot(q,q);
-  if(e.a>.01&&d<closest){closest=d;anchor=q;best=e;}
- }
- if(closest>5.5)return 0.;
- float distance=dot(-anchor,poNormal(best));
- float pressure=1.,shift=0.;
- if(mode==2){
-  shift=jitter*(2.*pnNoise(pixel*.035+vec2(drawing*3.17,drawing*.91))-1.);
-  pressure=.70+.38*pnNoise(pixel*.12+vec2(drawing*.73,11));
- }
- float coverage=clamp(.64*pressure+.6-abs(distance-shift),0.,1.);
- float tooth=mode==2?.76+.24*pnHash(floor(pixel)):1.;
- return coverage*(mode==2?.83:.84)*tooth*best.a;
+float poFittedInk(vec2 pixelPosition, float frameSeed, float jitterPixels, int outlineMode) {
+    // One coarse alpha tap rejects blank areas. At mip 3, bilinear support
+    // extends at least four native pixels, conservatively covering the 5x5 search.
+    // Mip alpha is occupancy only; descriptor positions always come from mip 0.
+    float occupancy = textureLod(edgeSeeds, pixelPosition / resolution, 3.0).a;
+    if (occupancy <= 0.0) {
+        return 0.0;
+    }
+    ivec2 centerPixel = ivec2(pixelPosition);
+    float closestDistanceSquared = 1e9;
+    vec2 closestOffset = vec2(0);
+    vec4 closestDescriptor = vec4(0);
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            vec4 descriptor = poSeed(centerPixel + ivec2(x, y));
+            vec2 neighborOffset = vec2(x, y) + poOffset(descriptor);
+            float distanceSquared = dot(neighborOffset, neighborOffset);
+            if (descriptor.a > 0.01 && distanceSquared < closestDistanceSquared) {
+                closestDistanceSquared = distanceSquared;
+                closestOffset = neighborOffset;
+                closestDescriptor = descriptor;
+            }
+        }
+    }
+    if (closestDistanceSquared > 5.5) {
+        return 0.0;
+    }
+
+    // Shade the closest local line. Only Pencil fit (mode 2) varies its placement
+    // and pressure; Stable fit and Lines only keep their fixed line appearance.
+    float distanceToLine = dot(-closestOffset, poNormal(closestDescriptor));
+    float linePressure = 1.0;
+    float lineDisplacement = 0.0;
+    if (outlineMode == 2) {
+        lineDisplacement =
+            jitterPixels *
+            (2.0 * pnNoise(pixelPosition * 0.035 + vec2(frameSeed * 3.17, frameSeed * 0.91)) - 1.0);
+        linePressure = 0.70 + 0.38 * pnNoise(pixelPosition * 0.12 + vec2(frameSeed * 0.73, 11));
+    }
+    float lineCoverage =
+        clamp(0.64 * linePressure + 0.6 - abs(distanceToLine - lineDisplacement), 0.0, 1.0);
+    float paperContact = outlineMode == 2 ? 0.76 + 0.24 * pnHash(floor(pixelPosition)) : 1.0;
+    return lineCoverage * (outlineMode == 2 ? 0.83 : 0.84) * paperContact * closestDescriptor.a;
 }
 #endif
 
-void main(){
- vec3 base=texture(sceneTexture,gl_FragCoord.xy/resolution).rgb;
- float ink=outlineMode>0?poFittedInk(gl_FragCoord.xy,drawing,jitter,outlineMode):0.;
- if(outlineMode==3)base=vec3(.984,.978,.958);
- color=vec4(mix(base,vec3(.125,.119,.115),ink),1.);
+#ifdef OUTLINE_FIT_PASS
+// Write one fitted descriptor per occupied pixel before generating its mipmaps.
+void main() {
+    color = poFitAtSeed(ivec2(gl_FragCoord.xy));
 }
+#else
+void main() {
+    vec3 sceneColor = texture(sceneTexture, gl_FragCoord.xy / resolution).rgb;
+    float outlineInk =
+        outlineMode > 0 ? poFittedInk(gl_FragCoord.xy, drawing, jitter, outlineMode) : 0.0;
+    if (outlineMode == 3) {
+        sceneColor = vec3(0.984, 0.978, 0.958);
+    }
+    color = vec4(mix(sceneColor, vec3(0.125, 0.119, 0.115), outlineInk), 1.0);
+}
+#endif
 
   </script>
   <script>
@@ -1284,8 +1818,7 @@ function buildPencilCityGeometry(extended = false, castersOnly = false, collider
   return vertices;
 }
 
-const CITY_LIGHTING_GLSL="// Light direction points FROM the surface TOWARD the sun. Camera-independent.\n// Geometric face normals are required for receiver-plane filtering.\nuniform vec3 lightDirection,lightRight,lightUp;\nuniform float shadowPlaneScale;\nvec2 cityPlaneSlope(vec3 n){\n float facing=dot(n,lightDirection);\n facing=(facing<0.?-1.:1.)*max(abs(facing),1e-7);\n return shadowPlaneScale*vec2(dot(n,lightRight),dot(n,lightUp))/facing;\n}\nuniform highp sampler2DShadow shadowMap;\nfloat cityShadowVisibility(vec4 shadowPos,vec3 n){\n // Opaque back-facing surfaces receive no direct sun. This is visibility, not\n // the artistic form-tone term; raw mode must not paint these faces white.\n float facing=dot(n,lightDirection);\n if(facing<=0.)return 0.;\n vec3 s=shadowPos.xyz/shadowPos.w*.5+.5;\n if(any(lessThan(s,vec3(0)))||any(greaterThan(s,vec3(1))))return 1.;\n // Exact receiver plane in light space. Its slope is independent of the camera,\n // and is not arbitrarily clamped at grazing incidence.\n vec2 slope=cityPlaneSlope(n);\n ivec2 size=textureSize(shadowMap,0),base=ivec2(floor(s.xy*vec2(size)));\n // Comparison tolerance includes a depth-precision floor and a fraction of one\n // world-space shadow texel. It is independent of camera distance/resolution.\n float bias=2./65535.+.125*shadowPlaneScale/float(size.x);\n vec2 f=fract(s.xy*vec2(size))-.5;\n vec3 wx=vec3(.5*(.5-f.x)*(.5-f.x),.75-f.x*f.x,.5*(.5+f.x)*(.5+f.x));\n vec3 wy=vec3(.5*(.5-f.y)*(.5-f.y),.75-f.y*f.y,.5*(.5+f.y)*(.5+f.y));\n float blocked=0.;\n for(int ix=-1;ix<=1;ix++)for(int iy=-1;iy<=1;iy++){\n  ivec2 cell=base+ivec2(ix,iy);\n  // Border taps are clear. Clamping would stretch an edge occluder outward.\n  if(any(lessThan(cell,ivec2(0)))||any(greaterThanEqual(cell,size)))continue;\n  vec2 center=(vec2(cell)+.5)/vec2(size);\n  // NEAREST samples this texel CENTER, not the unquantized requested UV.\n  float receiver=s.z+dot(slope,center-s.xy);\n  // At grazing incidence a neighboring receiver-plane point can leave the\n  // light's depth volume even when the center pixel is inside it. Such a tap\n  // has no valid shadow information; comparing it with clear depth creates a\n  // false half-shadow and map-border patterns.\n  if(receiver<0.||receiver>1.)continue;\n  // Compare in the depth texture unit; do not fetch/round depth into color math.\n  float clear=textureLod(shadowMap,vec3(center,receiver-bias),0.);\n  blocked+=(1.-clear)*wx[ix+1]*wy[iy+1];\n }\n // Summing occlusion preserves EXACTLY zero shadow on an unoccluded plane.\n return 1.-(blocked>0.999999?1.:clamp(blocked,0.,1.));\n}\n// Indirect illumination keeps ordinary turning faces lighter than cast shadows.\n// This controls ink demand, not stroke placement or the paper/graphite colors.\nfloat cityPencilTone(vec3 n,float visible,float material){\n float form=1.-smoothstep(-.25,.48,dot(n,lightDirection));\n // Keep unlit form shading separate from additional cast-shadow ink. Direct\n // visibility is zero on reverse faces, but they need not become black pencil.\n float occlusion=(1.-visible)*smoothstep(.01,.03,dot(n,lightDirection));\n if(material>2.5)return .87*occlusion;\n if(material>1.5)return .70+.22*max(form,occlusion);\n return max(.38*pow(form,1.12),.86*pow(occlusion,1.12));\n}\n";
-const CITY_SURFACE_GLSL="// Pixel ray / geometric plane intersection (orthographic or perspective). The position and its\n// footprint come from the SAME mapping, independent of triangle raster snapping.\nuniform vec3 eye,cameraRight,cameraUp,cameraForward;\nuniform vec2 resolution;\nuniform float worldPerPixel,sampleScale;\nuniform int cameraPerspective;\nuniform mat4 lightProjection;\nvec3 citySurfacePoint(vec3 normal,float planeDistance,out vec3 dx,out vec3 dy){\n if(cameraPerspective==1){\n  vec2 screen=(gl_FragCoord.xy/sampleScale-resolution*.5)*worldPerPixel;\n  vec3 ray=cameraForward+cameraRight*screen.x+cameraUp*screen.y;\n  float facing=dot(normal,ray);\n  facing=(facing<0.?-1.:1.)*max(abs(facing),1e-7);\n  float t=(planeDistance-dot(normal,eye))/facing;\n  dx=t*worldPerPixel*(cameraRight-ray*dot(normal,cameraRight)/facing);\n  dy=t*worldPerPixel*(cameraUp-ray*dot(normal,cameraUp)/facing);\n  return eye+ray*t;\n }\n float facing=dot(normal,cameraForward);\n facing=(facing<0.?-1.:1.)*max(abs(facing),1e-7);\n vec2 screen=(gl_FragCoord.xy/sampleScale-resolution*.5)*worldPerPixel;\n vec3 ray=eye+cameraRight*screen.x+cameraUp*screen.y;\n dx=worldPerPixel*(cameraRight-cameraForward*dot(normal,cameraRight)/facing);\n dy=worldPerPixel*(cameraUp-cameraForward*dot(normal,cameraUp)/facing);\n return ray+cameraForward*((planeDistance-dot(normal,ray))/facing);\n}\n";
+const CITY_SHADERS = {"vertex": "#version 300 es\nprecision highp float;\nlayout(location = 0) in vec3 position;\nlayout(location = 1) in vec3 normal;\nlayout(location = 2) in float material;\nuniform mat4 viewProjection, lightProjection;\nout vec3 worldPosition;\nout vec3 worldNormal;\nout vec4 lightClipPosition;\nflat out float materialId;\nflat out float planeDistance;\ninvariant gl_Position;\n// Shared by the camera and shadow passes so moving cars stay aligned.\n// Material IDs >= 16 encode a car number and its local material category.\n// Distances below describe the existing rectangular road route in scene units.\nuniform float trafficTime;\nvoid vehicle(inout vec3 worldPosition, inout vec3 worldNormal, inout float materialId) {\n    if (materialId < 16.0) {\n        return;\n    }\n    float vehicleId = floor((materialId - 16.0) / 8.0);\n    materialId = mod(materialId, 8.0);\n    float routeDistance = mod(trafficTime * 0.72 + vehicleId * 8.24, 32.96);\n    vec2 vehicleCenter;\n    vec2 travelDirection;\n    if (routeDistance < 8.84) {\n        vehicleCenter = vec2(-4.42 + routeDistance, -3.82);\n        travelDirection = vec2(1, 0);\n    } else if (routeDistance < 16.48) {\n        vehicleCenter = vec2(4.42, -3.82 + (routeDistance - 8.84));\n        travelDirection = vec2(0, 1);\n    } else if (routeDistance < 25.32) {\n        vehicleCenter = vec2(4.42 - (routeDistance - 16.48), 3.82);\n        travelDirection = vec2(-1, 0);\n    } else {\n        vehicleCenter = vec2(-4.42, 3.82 - (routeDistance - 25.32));\n        travelDirection = vec2(0, -1);\n    }\n    mat2 vehicleRotation = mat2(travelDirection, vec2(-travelDirection.y, travelDirection.x));\n    worldPosition.xz = vehicleRotation * worldPosition.xz + vehicleCenter;\n    worldNormal.xz = vehicleRotation * worldNormal.xz;\n}\n\n// Keep exactly this vertex transform for every camera pass: equal-depth\n// testing depends on identical rasterized positions in visibility and shading.\nvoid main() {\n    worldPosition = position;\n    worldNormal = normal;\n    materialId = material;\n    vehicle(worldPosition, worldNormal, materialId);\n    planeDistance = dot(worldNormal, worldPosition);\n    lightClipPosition = lightProjection * vec4(worldPosition, 1);\n    gl_Position = viewProjection * vec4(worldPosition, 1);\n}\n", "shadowVertex": "#version 300 es\nprecision highp float;\nlayout(location = 0) in vec3 position;\nlayout(location = 1) in vec3 normal;\nlayout(location = 2) in float material;\nuniform mat4 lightProjection;\n// Shared by the camera and shadow passes so moving cars stay aligned.\n// Material IDs >= 16 encode a car number and its local material category.\n// Distances below describe the existing rectangular road route in scene units.\nuniform float trafficTime;\nvoid vehicle(inout vec3 worldPosition, inout vec3 worldNormal, inout float materialId) {\n    if (materialId < 16.0) {\n        return;\n    }\n    float vehicleId = floor((materialId - 16.0) / 8.0);\n    materialId = mod(materialId, 8.0);\n    float routeDistance = mod(trafficTime * 0.72 + vehicleId * 8.24, 32.96);\n    vec2 vehicleCenter;\n    vec2 travelDirection;\n    if (routeDistance < 8.84) {\n        vehicleCenter = vec2(-4.42 + routeDistance, -3.82);\n        travelDirection = vec2(1, 0);\n    } else if (routeDistance < 16.48) {\n        vehicleCenter = vec2(4.42, -3.82 + (routeDistance - 8.84));\n        travelDirection = vec2(0, 1);\n    } else if (routeDistance < 25.32) {\n        vehicleCenter = vec2(4.42 - (routeDistance - 16.48), 3.82);\n        travelDirection = vec2(-1, 0);\n    } else {\n        vehicleCenter = vec2(-4.42, 3.82 - (routeDistance - 25.32));\n        travelDirection = vec2(0, -1);\n    }\n    mat2 vehicleRotation = mat2(travelDirection, vec2(-travelDirection.y, travelDirection.x));\n    worldPosition.xz = vehicleRotation * worldPosition.xz + vehicleCenter;\n    worldNormal.xz = vehicleRotation * worldNormal.xz;\n}\n\nvoid main() {\n    vec3 worldPosition = position;\n    vec3 worldNormal = normal;\n    float materialId = material;\n    vehicle(worldPosition, worldNormal, materialId);\n    gl_Position = lightProjection * vec4(worldPosition, 1);\n}\n", "depth": "#version 300 es\nprecision highp float;\nvoid main() {\n}\n", "fill": "#version 300 es\nprecision highp float;\nin vec3 worldPosition;\nin vec3 worldNormal;\nin vec4 lightClipPosition;\nflat in float materialId;\nflat in float planeDistance;\nlayout(location = 0) out vec4 color;\nlayout(location = 1) out vec4 meta;\nuniform int fastSampling;\nuniform float drawing;\nuniform int method;\n// Pixel ray / geometric plane intersection (orthographic or perspective). The position and its\n// footprint come from the SAME mapping, independent of triangle raster snapping.\n// Camera basis and plane data are in world space. planeDistance = dot(surfaceNormal, surfacePosition).\n// worldPerPixel is constant for orbit views; for perspective it is the scale\n// at unit view depth. sampleScale converts supersample pixels to output pixels.\nuniform vec3 eye;\nuniform vec3 cameraRight;\nuniform vec3 cameraUp;\nuniform vec3 cameraForward;\nuniform vec2 resolution;\nuniform float worldPerPixel;\nuniform float sampleScale;\nuniform int cameraPerspective;\nuniform mat4 lightProjection;\n\nvec3 citySurfacePoint(vec3 surfaceNormal, float planeDistance, out vec3 positionDx,\n                      out vec3 positionDy) {\n    // Perspective: intersect the varying pixel ray with this face, then\n    // differentiate that same intersection with respect to screen x and y.\n    if (cameraPerspective == 1) {\n        vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n        vec3 pixelRay = cameraForward + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n        float rayPlaneDenominator = dot(surfaceNormal, pixelRay);\n        rayPlaneDenominator =\n            (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n        float viewDepth = (planeDistance - dot(surfaceNormal, eye)) / rayPlaneDenominator;\n        positionDx =\n            viewDepth * worldPerPixel *\n            (cameraRight - pixelRay * dot(surfaceNormal, cameraRight) / rayPlaneDenominator);\n        positionDy = viewDepth * worldPerPixel *\n                     (cameraUp - pixelRay * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n        return eye + pixelRay * viewDepth;\n    }\n\n    // Orthographic: every ray has the same direction and a different origin.\n    float rayPlaneDenominator = dot(surfaceNormal, cameraForward);\n    rayPlaneDenominator =\n        (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n    vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n    vec3 rayOrigin = eye + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n    positionDx = worldPerPixel * (cameraRight - cameraForward * dot(surfaceNormal, cameraRight) /\n                                                    rayPlaneDenominator);\n    positionDy = worldPerPixel *\n                 (cameraUp - cameraForward * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n    return rayOrigin +\n           cameraForward * ((planeDistance - dot(surfaceNormal, rayOrigin)) / rayPlaneDenominator);\n}\n\n// Light direction points FROM the surface TOWARD the sun. Camera-independent.\n// Geometric face normals are required for receiver-plane filtering.\nuniform vec3 lightDirection;\nuniform vec3 lightRight;\nuniform vec3 lightUp;\nuniform float shadowPlaneScale;\nuniform highp sampler2DShadow shadowMap;\n\n// Change in normalized light depth per unit of shadow-map UV.\nvec2 cityPlaneSlope(vec3 surfaceNormal) {\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    lightFacing = (lightFacing < 0.0 ? -1.0 : 1.0) * max(abs(lightFacing), 1e-7);\n    return shadowPlaneScale * vec2(dot(surfaceNormal, lightRight), dot(surfaceNormal, lightUp)) /\n           lightFacing;\n}\n\nfloat cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {\n    // Opaque back-facing surfaces receive no direct sun. This is visibility, not\n    // the artistic form-tone term; raw mode must not paint these faces white.\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    if (lightFacing <= 0.0) {\n        return 0.0;\n    }\n    vec3 shadowCoordinate = lightClipPosition.xyz / lightClipPosition.w * 0.5 + 0.5;\n    if (any(lessThan(shadowCoordinate, vec3(0))) || any(greaterThan(shadowCoordinate, vec3(1)))) {\n        return 1.0;\n    }\n    // Exact receiver plane in light space. Its slope is independent of the camera,\n    // and is not arbitrarily clamped at grazing incidence.\n    vec2 receiverSlope = cityPlaneSlope(surfaceNormal);\n    ivec2 shadowSize = textureSize(shadowMap, 0);\n    ivec2 baseTexel = ivec2(floor(shadowCoordinate.xy * vec2(shadowSize)));\n    // Comparison tolerance includes a depth-precision floor and a fraction of one\n    // world-space shadow texel. It is independent of camera distance/resolution.\n    float depthBias = 2.0 / 65535.0 + 0.125 * shadowPlaneScale / float(shadowSize.x);\n\n    // Separable quadratic B-spline weights across a 3x3 texel neighborhood.\n    // Compute each comparison at its texel center to avoid receiver-plane acne.\n    vec2 texelOffset = fract(shadowCoordinate.xy * vec2(shadowSize)) - 0.5;\n    vec3 weightsX = vec3(0.5 * (0.5 - texelOffset.x) * (0.5 - texelOffset.x),\n                         0.75 - texelOffset.x * texelOffset.x,\n                         0.5 * (0.5 + texelOffset.x) * (0.5 + texelOffset.x));\n    vec3 weightsY = vec3(0.5 * (0.5 - texelOffset.y) * (0.5 - texelOffset.y),\n                         0.75 - texelOffset.y * texelOffset.y,\n                         0.5 * (0.5 + texelOffset.y) * (0.5 + texelOffset.y));\n\n    float occlusion = 0.0;\n    for (int tapX = -1; tapX <= 1; tapX++) {\n        for (int tapY = -1; tapY <= 1; tapY++) {\n            ivec2 tapTexel = baseTexel + ivec2(tapX, tapY);\n            // Border taps are clear. Clamping would stretch an edge occluder outward.\n            if (any(lessThan(tapTexel, ivec2(0))) || any(greaterThanEqual(tapTexel, shadowSize))) {\n                continue;\n            }\n            vec2 tapUV = (vec2(tapTexel) + 0.5) / vec2(shadowSize);\n            // NEAREST samples this texel CENTER, not the unquantized requested UV.\n            float receiverDepth =\n                shadowCoordinate.z + dot(receiverSlope, tapUV - shadowCoordinate.xy);\n            // At grazing incidence a neighboring receiver-plane point can leave the\n            // light's depth volume even when the center pixel is inside it. Such a tap\n            // has no valid shadow information; comparing it with clear depth creates a\n            // false half-shadow and map-border patterns.\n            if (receiverDepth < 0.0 || receiverDepth > 1.0) {\n                continue;\n            }\n            // Compare in the depth texture unit; do not fetch/round depth into color math.\n            float visibility = textureLod(shadowMap, vec3(tapUV, receiverDepth - depthBias), 0.0);\n            occlusion += (1.0 - visibility) * weightsX[tapX + 1] * weightsY[tapY + 1];\n        }\n    }\n    // Summing occlusion preserves EXACTLY zero shadow on an unoccluded plane.\n    return 1.0 - (occlusion > 0.999999 ? 1.0 : clamp(occlusion, 0.0, 1.0));\n}\n\n// Indirect illumination keeps ordinary turning faces lighter than cast shadows.\n// This controls ink demand, not stroke placement or the paper/graphite colors.\nfloat cityPencilTone(vec3 surfaceNormal, float sunVisibility, float material) {\n    float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));\n    // Keep unlit form shading separate from additional cast-shadow ink. Direct\n    // visibility is zero on reverse faces, but they need not become black pencil.\n    float castShadow =\n        (1.0 - sunVisibility) * smoothstep(0.01, 0.03, dot(surfaceNormal, lightDirection));\n    // Material categories: 0/1 = walls and roofs, 2 = dark facade details,\n    // 3/4 = ground, paving and roads. Constants below are the existing art direction.\n    if (material > 2.5) {\n        return 0.87 * castShadow;\n    }\n    if (material > 1.5) {\n        return 0.70 + 0.22 * max(formShadow, castShadow);\n    }\n    return max(0.38 * pow(formShadow, 1.12), 0.86 * pow(castShadow, 1.12));\n}\n\n// PENCIL_CORE_INSERT\n\n// Pipeline: surface position -> sun visibility -> ink demand -> stroke coverage\n// -> paper contact. Shading methods: 0 pencil, 1 engraving, 2 fixed stripes.\nvoid main() {\n    // Reconstruct position and footprint together before evaluating the hatching.\n    vec3 positionDx;\n    vec3 positionDy;\n    vec3 surfacePosition = citySurfacePoint(worldNormal, planeDistance, positionDx, positionDy);\n    float sunVisibility =\n        cityShadowVisibility(lightProjection * vec4(surfacePosition, 1), worldNormal);\n    float tone = cityPencilTone(worldNormal, sunVisibility, materialId);\n\n    // Paper and roads retain their original base colors even without hatch ink.\n    float paperTooth = pnHash(floor(gl_FragCoord.xy / sampleScale));\n    vec3 paperColor = vec3(0.984, 0.978, 0.958) * (0.978 + 0.022 * paperTooth);\n    if (materialId > 3.5) {\n        paperColor *= 0.96;\n    }\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n    // Exit the FRAGMENT entry point, not only the nested hatch helper. This makes\n    // complete paper quads cheap even on backends that flatten helper branches.\n    if (tone <= 0.0) {\n        color = vec4(paperColor, 1);\n        return;\n    }\n    // Roofs share paper highlights; no decorative ink on fully lit surfaces.\n    // Two symmetric samples preserve the fine graphite coverage. Geometry uses\n    // native MSAA; outlines retain the original independent 2x metadata samples.\n    vec3 sampleOffset = fastSampling == 1 ? 0.25 * (positionDx + positionDy) : vec3(0.0);\n    float inkCoverage = pnPencil(surfacePosition - sampleOffset, worldNormal, positionDx,\n                                 positionDy, tone, drawing);\n    if (fastSampling == 1) {\n        inkCoverage = 0.5 * (inkCoverage + pnPencil(surfacePosition + sampleOffset, worldNormal,\n                                                    positionDx, positionDy, tone, drawing));\n    }\n\n    // Comparison modes reuse the same surface and its matching derivatives.\n    if (method > 0) {\n        vec2 chartPosition =\n            abs(worldNormal.y) > 0.8\n                ? surfacePosition.xz\n                : (abs(worldNormal.x) > 0.7 ? surfacePosition.zy : surfacePosition.xy);\n        float phase = dot(chartPosition, vec2(1, 0.6));\n        vec2 chartDx = abs(worldNormal.y) > 0.8\n                           ? positionDx.xz\n                           : (abs(worldNormal.x) > 0.7 ? positionDx.zy : positionDx.xy);\n        vec2 chartDy = abs(worldNormal.y) > 0.8\n                           ? positionDy.xz\n                           : (abs(worldNormal.x) > 0.7 ? positionDy.zy : positionDy.xy);\n        vec2 phaseGradient = vec2(dot(chartDx, vec2(1, 0.6)), dot(chartDy, vec2(1, 0.6)));\n        inkCoverage = method == 1 ? fhFamilyState(phase, phaseGradient, phaseGradient, tone, 7.0)\n                                  : fhStripe(phase * 32.0, tone,\n                                             (abs(phaseGradient.x) + abs(phaseGradient.y)) * 32.0);\n    }\n\n    // Paper contact affects light deposits more strongly than dense overlaps.\n    float paperFibre = pnNoise(gl_FragCoord.xy / sampleScale * vec2(0.13, 0.87));\n    inkCoverage *= mix(clamp(0.80 + 0.27 * paperTooth + 0.13 * paperFibre, 0.0, 1.0), 1.0,\n                       pow(inkCoverage, 3.0));\n    if (materialId > 2.5) {\n        inkCoverage *= 1.0 - smoothstep(4.8, 7.8, length(surfacePosition.xz));\n    }\n    color = vec4(mix(paperColor, vec3(0.125, 0.119, 0.115), inkCoverage), 1);\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "paper": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float materialId;\nuniform float sampleScale;\nlayout(location = 0) out vec4 color;\nlayout(location = 1) out vec4 meta;\n// PENCIL_CORE_INSERT\nvoid main() {\n    float paperTooth = pnHash(floor(gl_FragCoord.xy / sampleScale));\n    color = vec4(vec3(0.984, 0.978, 0.958) * (0.978 + 0.022 * paperTooth), 1);\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "raw": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float planeDistance;\nout vec4 color;\nuniform int debugView;\n// Pixel ray / geometric plane intersection (orthographic or perspective). The position and its\n// footprint come from the SAME mapping, independent of triangle raster snapping.\n// Camera basis and plane data are in world space. planeDistance = dot(surfaceNormal, surfacePosition).\n// worldPerPixel is constant for orbit views; for perspective it is the scale\n// at unit view depth. sampleScale converts supersample pixels to output pixels.\nuniform vec3 eye;\nuniform vec3 cameraRight;\nuniform vec3 cameraUp;\nuniform vec3 cameraForward;\nuniform vec2 resolution;\nuniform float worldPerPixel;\nuniform float sampleScale;\nuniform int cameraPerspective;\nuniform mat4 lightProjection;\n\nvec3 citySurfacePoint(vec3 surfaceNormal, float planeDistance, out vec3 positionDx,\n                      out vec3 positionDy) {\n    // Perspective: intersect the varying pixel ray with this face, then\n    // differentiate that same intersection with respect to screen x and y.\n    if (cameraPerspective == 1) {\n        vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n        vec3 pixelRay = cameraForward + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n        float rayPlaneDenominator = dot(surfaceNormal, pixelRay);\n        rayPlaneDenominator =\n            (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n        float viewDepth = (planeDistance - dot(surfaceNormal, eye)) / rayPlaneDenominator;\n        positionDx =\n            viewDepth * worldPerPixel *\n            (cameraRight - pixelRay * dot(surfaceNormal, cameraRight) / rayPlaneDenominator);\n        positionDy = viewDepth * worldPerPixel *\n                     (cameraUp - pixelRay * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n        return eye + pixelRay * viewDepth;\n    }\n\n    // Orthographic: every ray has the same direction and a different origin.\n    float rayPlaneDenominator = dot(surfaceNormal, cameraForward);\n    rayPlaneDenominator =\n        (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n    vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n    vec3 rayOrigin = eye + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n    positionDx = worldPerPixel * (cameraRight - cameraForward * dot(surfaceNormal, cameraRight) /\n                                                    rayPlaneDenominator);\n    positionDy = worldPerPixel *\n                 (cameraUp - cameraForward * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n    return rayOrigin +\n           cameraForward * ((planeDistance - dot(surfaceNormal, rayOrigin)) / rayPlaneDenominator);\n}\n\n// Light direction points FROM the surface TOWARD the sun. Camera-independent.\n// Geometric face normals are required for receiver-plane filtering.\nuniform vec3 lightDirection;\nuniform vec3 lightRight;\nuniform vec3 lightUp;\nuniform float shadowPlaneScale;\nuniform highp sampler2DShadow shadowMap;\n\n// Change in normalized light depth per unit of shadow-map UV.\nvec2 cityPlaneSlope(vec3 surfaceNormal) {\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    lightFacing = (lightFacing < 0.0 ? -1.0 : 1.0) * max(abs(lightFacing), 1e-7);\n    return shadowPlaneScale * vec2(dot(surfaceNormal, lightRight), dot(surfaceNormal, lightUp)) /\n           lightFacing;\n}\n\nfloat cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {\n    // Opaque back-facing surfaces receive no direct sun. This is visibility, not\n    // the artistic form-tone term; raw mode must not paint these faces white.\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    if (lightFacing <= 0.0) {\n        return 0.0;\n    }\n    vec3 shadowCoordinate = lightClipPosition.xyz / lightClipPosition.w * 0.5 + 0.5;\n    if (any(lessThan(shadowCoordinate, vec3(0))) || any(greaterThan(shadowCoordinate, vec3(1)))) {\n        return 1.0;\n    }\n    // Exact receiver plane in light space. Its slope is independent of the camera,\n    // and is not arbitrarily clamped at grazing incidence.\n    vec2 receiverSlope = cityPlaneSlope(surfaceNormal);\n    ivec2 shadowSize = textureSize(shadowMap, 0);\n    ivec2 baseTexel = ivec2(floor(shadowCoordinate.xy * vec2(shadowSize)));\n    // Comparison tolerance includes a depth-precision floor and a fraction of one\n    // world-space shadow texel. It is independent of camera distance/resolution.\n    float depthBias = 2.0 / 65535.0 + 0.125 * shadowPlaneScale / float(shadowSize.x);\n\n    // Separable quadratic B-spline weights across a 3x3 texel neighborhood.\n    // Compute each comparison at its texel center to avoid receiver-plane acne.\n    vec2 texelOffset = fract(shadowCoordinate.xy * vec2(shadowSize)) - 0.5;\n    vec3 weightsX = vec3(0.5 * (0.5 - texelOffset.x) * (0.5 - texelOffset.x),\n                         0.75 - texelOffset.x * texelOffset.x,\n                         0.5 * (0.5 + texelOffset.x) * (0.5 + texelOffset.x));\n    vec3 weightsY = vec3(0.5 * (0.5 - texelOffset.y) * (0.5 - texelOffset.y),\n                         0.75 - texelOffset.y * texelOffset.y,\n                         0.5 * (0.5 + texelOffset.y) * (0.5 + texelOffset.y));\n\n    float occlusion = 0.0;\n    for (int tapX = -1; tapX <= 1; tapX++) {\n        for (int tapY = -1; tapY <= 1; tapY++) {\n            ivec2 tapTexel = baseTexel + ivec2(tapX, tapY);\n            // Border taps are clear. Clamping would stretch an edge occluder outward.\n            if (any(lessThan(tapTexel, ivec2(0))) || any(greaterThanEqual(tapTexel, shadowSize))) {\n                continue;\n            }\n            vec2 tapUV = (vec2(tapTexel) + 0.5) / vec2(shadowSize);\n            // NEAREST samples this texel CENTER, not the unquantized requested UV.\n            float receiverDepth =\n                shadowCoordinate.z + dot(receiverSlope, tapUV - shadowCoordinate.xy);\n            // At grazing incidence a neighboring receiver-plane point can leave the\n            // light's depth volume even when the center pixel is inside it. Such a tap\n            // has no valid shadow information; comparing it with clear depth creates a\n            // false half-shadow and map-border patterns.\n            if (receiverDepth < 0.0 || receiverDepth > 1.0) {\n                continue;\n            }\n            // Compare in the depth texture unit; do not fetch/round depth into color math.\n            float visibility = textureLod(shadowMap, vec3(tapUV, receiverDepth - depthBias), 0.0);\n            occlusion += (1.0 - visibility) * weightsX[tapX + 1] * weightsY[tapY + 1];\n        }\n    }\n    // Summing occlusion preserves EXACTLY zero shadow on an unoccluded plane.\n    return 1.0 - (occlusion > 0.999999 ? 1.0 : clamp(occlusion, 0.0, 1.0));\n}\n\n// Indirect illumination keeps ordinary turning faces lighter than cast shadows.\n// This controls ink demand, not stroke placement or the paper/graphite colors.\nfloat cityPencilTone(vec3 surfaceNormal, float sunVisibility, float material) {\n    float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));\n    // Keep unlit form shading separate from additional cast-shadow ink. Direct\n    // visibility is zero on reverse faces, but they need not become black pencil.\n    float castShadow =\n        (1.0 - sunVisibility) * smoothstep(0.01, 0.03, dot(surfaceNormal, lightDirection));\n    // Material categories: 0/1 = walls and roofs, 2 = dark facade details,\n    // 3/4 = ground, paving and roads. Constants below are the existing art direction.\n    if (material > 2.5) {\n        return 0.87 * castShadow;\n    }\n    if (material > 1.5) {\n        return 0.70 + 0.22 * max(formShadow, castShadow);\n    }\n    return max(0.38 * pow(formShadow, 1.12), 0.86 * pow(castShadow, 1.12));\n}\n\nvoid main() {\n    if (debugView == 2) {\n        color = vec4(vec3(max(dot(worldNormal, lightDirection), 0.0)), 1);\n        return;\n    }\n    vec3 positionDx;\n    vec3 positionDy;\n    vec3 surfacePosition = citySurfacePoint(worldNormal, planeDistance, positionDx, positionDy);\n    color = vec4(\n        vec3(cityShadowVisibility(lightProjection * vec4(surfacePosition, 1), worldNormal)), 1);\n}\n", "metadata": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float materialId;\nlayout(location = 1) out vec4 meta;\nvoid main() {\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "fullscreen": "#version 300 es\n// A single oversized triangle covers the viewport without a shared diagonal.\nvoid main() {\n    vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n    gl_Position = vec4(corner * 2.0 - 1.0, 0, 1);\n}\n"};
 // Rasterized city + shadow map + screen-space depth/normal outline fitting.
 // No dependencies. The outline passes have no access to mesh edges or IDs.
 function createPencilCity(
@@ -1400,21 +1933,6 @@ function createPencilCity(
     return p;
   }
   const vertices = geometry || buildPencilCityGeometry(extended);
-  // Identical transform in color, metadata and depth passes. Each car takes the
-  // outer lane of the same rectangular route; no per-frame mesh uploads.
-  const trafficTransform = `
-uniform float trafficTime;
-void vehicle(inout vec3 p,inout vec3 n,inout float m){
- if(m<16.)return;
- float id=floor((m-16.)/8.);m=mod(m,8.);
- float s=mod(trafficTime*.72+id*8.24,32.96);
- vec2 center,axis;
- if(s<8.84){center=vec2(-4.42+s,-3.82);axis=vec2(1,0);}
- else if(s<16.48){center=vec2(4.42,-3.82+(s-8.84));axis=vec2(0,1);}
- else if(s<25.32){center=vec2(4.42-(s-16.48),3.82);axis=vec2(-1,0);}
- else{center=vec2(-4.42,3.82-(s-25.32));axis=vec2(0,-1);}
- mat2 turn=mat2(axis,vec2(-axis.y,axis.x));p.xz=turn*p.xz+center;n.xz=turn*n.xz;
-}`;
   function vao(data, stride, attributes) {
     let v = gl.createVertexArray();
     gl.bindVertexArray(v);
@@ -1471,104 +1989,24 @@ void vehicle(inout vec3 p,inout vec3 n,inout float m){
       ]),
     }));
   let groundBounds = null;
-  const vertex = `#version 300 es
-precision highp float;
-layout(location=0)in vec3 position;layout(location=1)in vec3 normal;layout(location=2)in float material;
-uniform mat4 viewProjection,lightProjection;
-out vec3 p,n;out vec4 shadowPos;flat out float mat,planeDistance;
-invariant gl_Position;
-${trafficTransform}
-void main(){p=position;n=normal;mat=material;vehicle(p,n,mat);planeDistance=dot(n,p);shadowPos=lightProjection*vec4(p,1);gl_Position=viewProjection*vec4(p,1);}`;
-  // All camera passes use exactly the same vertex transform and geometry.
-  const depth = program(
-    vertex,
-    `#version 300 es
-precision highp float;void main(){}`,
+  // Shader text comes from src/shaders/. build.py resolves its includes once;
+  // the caller supplies the pencil kernel used by both the demo and fixtures.
+  const withPencil = source => source.replace("// PENCIL_CORE_INSERT", pencilCore);
+  const vertex = CITY_SHADERS.vertex;
+  const depth = program(vertex, CITY_SHADERS.depth);
+  const shadowDepth = program(CITY_SHADERS.shadowVertex, CITY_SHADERS.depth);
+  const fillSource = withPencil(CITY_SHADERS.fill);
+  const paperProgram = program(vertex, withPencil(CITY_SHADERS.paper));
+  const rawProgram = program(vertex, CITY_SHADERS.raw);
+  const metadataProgram = program(vertex, CITY_SHADERS.metadata);
+  const fullscreen = CITY_SHADERS.fullscreen;
+  const detect = program(fullscreen, edgeSource);
+  const composite = program(fullscreen, compositeSource);
+  // The same source has explicit fitting and composition entry points.
+  const fitSource = compositeSource.replace(
+    "precision highp float;",
+    "precision highp float;\n#define OUTLINE_FIT_PASS",
   );
-  // Conventional depth-only light pass. Hardware owns depth interpolation and
-  // storage; polygon offset supplies a bounded rasterization margin.
-  const shadowDepth = program(
-    `#version 300 es
-precision highp float;
-layout(location=0)in vec3 position;layout(location=1)in vec3 normal;layout(location=2)in float material;
-uniform mat4 lightProjection;
-${trafficTransform}
-void main(){vec3 p=position,n=normal;float m=material;vehicle(p,n,m);gl_Position=lightProjection*vec4(p,1);}
-`,
-    `#version 300 es
-precision highp float;void main(){}`,
-  );
-  const fillSource = `#version 300 es
-precision highp float;
-in vec3 p,n;in vec4 shadowPos;flat in float mat,planeDistance;layout(location=0)out vec4 color;layout(location=1)out vec4 meta;
-uniform int fastSampling;uniform float drawing;uniform int method;
-${CITY_SURFACE_GLSL}
-${CITY_LIGHTING_GLSL}
-${pencilCore}
-
-void main(){
- vec3 dx,dy;
- vec3 surface=citySurfacePoint(n,planeDistance,dx,dy);
- float visible=cityShadowVisibility(lightProjection*vec4(surface,1),n);
- float tone=cityPencilTone(n,visible,mat);
- float tooth=pnHash(floor(gl_FragCoord.xy/sampleScale));
- vec3 paper=vec3(.984,.978,.958)*(.978+.022*tooth);
- if(mat>3.5)paper*=.96;
- meta=vec4(n*.5+.5,mat*.25);
- // Exit the FRAGMENT entry point, not only the nested hatch helper. This makes
- // complete paper quads cheap even on backends that flatten helper branches.
- if(tone<=0.){color=vec4(paper,1);return;}
- // Roofs share paper highlights; no decorative ink on fully lit surfaces.
- // Two symmetric samples preserve the fine graphite coverage. Geometry uses
- // native MSAA; outlines retain the original independent 2x metadata samples.
- vec3 offset=fastSampling==1?.25*(dx+dy):vec3(0.);
- float ink=pnPencil(surface-offset,n,dx,dy,tone,drawing);
- if(fastSampling==1)ink=.5*(ink+pnPencil(surface+offset,n,dx,dy,tone,drawing));
- if(method>0){vec2 uv=abs(n.y)>.8?surface.xz:(abs(n.x)>.7?surface.zy:surface.xy);float ph=dot(uv,vec2(1,.6));vec2 ux=abs(n.y)>.8?dx.xz:(abs(n.x)>.7?dx.zy:dx.xy),uy=abs(n.y)>.8?dy.xz:(abs(n.x)>.7?dy.zy:dy.xy);vec2 g=vec2(dot(ux,vec2(1,.6)),dot(uy,vec2(1,.6)));ink=method==1?fhFamilyState(ph,g,g,tone,7.):fhStripe(ph*32.,tone,(abs(g.x)+abs(g.y))*32.);}
- float fibre=pnNoise(gl_FragCoord.xy/sampleScale*vec2(.13,.87));
- ink*=mix(clamp(.80+.27*tooth+.13*fibre,0.,1.),1.,pow(ink,3.));
- if(mat>2.5)ink*=1.-smoothstep(4.8,7.8,length(surface.xz));
- color=vec4(mix(paper,vec3(.125,.119,.115),ink),1);meta=vec4(n*.5+.5,mat*.25);
-}`;
-  const paperProgram = program(
-    vertex,
-    `#version 300 es
-precision highp float;in vec3 n;flat in float mat;uniform float sampleScale;layout(location=0)out vec4 color;layout(location=1)out vec4 meta;
-${pencilCore}
-void main(){float tooth=pnHash(floor(gl_FragCoord.xy/sampleScale));color=vec4(vec3(.984,.978,.958)*(.978+.022*tooth),1);meta=vec4(n*.5+.5,mat*.25);}`,
-  );
-  // A separate program: no pencil kernel, tone curve, grain, or material color.
-  const rawProgram = program(
-    vertex,
-    `#version 300 es
-precision highp float;in vec3 n;flat in float planeDistance;out vec4 color;uniform int debugView;
-${CITY_SURFACE_GLSL}
-${CITY_LIGHTING_GLSL}
-void main(){
- if(debugView==2){color=vec4(vec3(max(dot(n,lightDirection),0.)),1);return;}
- vec3 dx,dy;vec3 surface=citySurfacePoint(n,planeDistance,dx,dy);
- color=vec4(vec3(cityShadowVisibility(lightProjection*vec4(surface,1),n)),1);
-}`,
-  );
-  const metadataProgram = program(
-    vertex,
-    `#version 300 es
-precision highp float;in vec3 n;flat in float mat;layout(location=1)out vec4 meta;
-void main(){meta=vec4(n*.5+.5,mat*.25);}`,
-  );
-  const fullscreen = `#version 300 es
-void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.-1.,0,1);}`;
-  const detect = program(fullscreen, edgeSource),
-    composite = program(fullscreen, compositeSource);
-  const fitSource = compositeSource
-    .replace(
-      "precision highp float;",
-      "precision highp float;\n#define OUTLINE_FIT_PASS",
-    )
-    .replace(
-      /void main\(\)\{[\s\S]*$/,
-      "void main(){color=poFitAtSeed(ivec2(gl_FragCoord.xy));}",
-    );
   const fitProgram = program(fullscreen, fitSource);
   const locations = (p) =>
     Object.fromEntries(
@@ -2399,7 +2837,7 @@ function createPencilWalk(canvas, panel, changed) {
       program,
       shader(
         gl.VERTEX_SHADER,
-        "#version 300 es\nvoid main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Position=vec4(p*2.0-1.0,0.0,1.0);}",
+        CITY_SHADERS.fullscreen,
       ),
     );
     gl.attachShader(

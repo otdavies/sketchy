@@ -26,7 +26,7 @@ With **Hold drawings** on, the whole image updates at most ten times a second. Z
 
 [Hatching](docs/hatching.md) · [Outlines](docs/outlines.md) · [Rendering](docs/pipeline.md) · [Sources](docs/references.md)
 
-Shaders are in `src/shaders/`; the scene and WebGL code are in `src/web/`. Run `python scripts/build.py` after editing them. The generated demo also works offline. See [tests and build instructions](docs/validation.md).
+Start with the [shader reading guide](src/shaders/README.md) for the call order, coordinate spaces and render passes. Shaders are in `src/shaders/`; the scene and WebGL code are in `src/web/`. Run `python scripts/build.py` after editing them. The generated demo also works offline. See [tests and build instructions](docs/validation.md).
 
 The next goal is a Unity paper drawing pipeline. [The porting plan](docs/unity-srp.md) records the required passes and unresolved work. The HLSL translations are included as references, but there is no Unity package yet.
 

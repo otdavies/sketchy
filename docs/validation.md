@@ -35,6 +35,20 @@ The shadow test runs 384 views with float32 depth storage, then repeats with act
 
 The hash checks protect the approved hatching kernels. A deliberate shader change still needs visual review; updating the hash alone is not validation.
 
+## Comparing a readability refactor
+
+`tests/shader-equivalence.cjs` renders two self-contained builds in the same browser. It compares 32 fixed views across scenes, shading methods, outline modes, quality settings and perspective shadow views. Drawing seeds and traffic positions are fixed. Every captured PNG must match byte for byte.
+
+To compare against the build before the shader readability pass:
+
+```sh
+git show 30c7300e06e4a5daba607f6458a5a93da6912086:demos/index.html > /tmp/sketchy-before.html
+python scripts/build.py
+node tests/shader-equivalence.cjs /tmp/sketchy-before.html
+```
+
+An optional second HTML path selects a different after-build. This comparison checks output on one browser/GPU; it is not a cross-driver guarantee or an HLSL compilation test.
+
 ## GitHub Pages
 
 The [Pages workflow](../.github/workflows/pages.yml) builds the site on each push to `main`. Repository Settings → Pages must use **GitHub Actions** as the source. The published entry point opens the interactive demo directly.
