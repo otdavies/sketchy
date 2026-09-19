@@ -1,0 +1,9 @@
+{
+  "note": "Approved pencil and engraving kernels. Changes require an intentional appearance review.",
+  "sha256": {
+    "src/shaders/PencilHatching.glsl": "8a0603b70bed967eff74af838c1584439af869442c064b80f2272e2125f7e4b3",
+    "reference/hlsl/PencilHatching.hlsl": "a5beae99290d9709c11342c4874c509527d0114f86f69b401c9a063ae51a62db",
+    "src/shaders/FractalHatching.glsl": "4a2a28105777c996844b737d35c3a701fc5fec1c5974ffbfe4e65fdcab6a4100",
+    "reference/hlsl/FractalHatching.hlsl": "a44ab643791e0a63e4c811986bbc1673aba5493136e95d24918d94b5209f5467"
+  }
+}

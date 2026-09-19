@@ -1,0 +1,19 @@
+# Research lineage
+
+The code in this repository is an independently written prototype. These sources establish the prior work and clarify what Sketchy is exploring. Links point to authors, original implementations or official documentation; no paper PDFs, upstream texture assets or reference artworks are redistributed here.
+
+| Source | Relevance and boundary |
+|---|---|
+| [Rune Skovbo Johansen — Surface-Stable Fractal Dithering](https://runevision.com/tech/dither3d/) and [Dither3D](https://github.com/runevision/Dither3D) | The central inspiration: surface-attached marks with approximately stable screen scale and nested membership during magnification. Sketchy applies that principle to finite procedural strokes. It does not bundle Dither3D's source or texture volumes. |
+| [Praun, Hoppe, Webb & Finkelstein — Real-Time Hatching, SIGGRAPH 2001](https://hhoppe.com/proj/hatching/) | Tonal Art Maps and lapped surface parameterizations establish stroke coherence across tone and resolution. Scale-coherent hatching is prior art; Sketchy explores an analytic, asset-free pencil construction. |
+| [Webb, Praun, Finkelstein & Hoppe — Fine Tone Control in Hardware Hatching, NPAR 2002](https://hhoppe.com/proj/finetone/) | Tone control and crisp stroke appearance deserve separate treatment. Sketchy's optical deposit response is an artistic approximation, not a reproduction of this method. |
+| [Brussee, Saraev & Chyr — That's a wrap: Manifold Garden rendering retrospective, SIGGRAPH 2020](https://history.siggraph.org/wp-content/uploads/2022/08/2020-Talks-Brussee_Thats-a-wrap_-Manifold-Garden-rendering-retrospective.pdf) | Section 3 describes depth/normal metadata, tangent-plane comparisons and an edge-distance approach with subpixel information. Sketchy adds its own local TLS line descriptors and pencil shading. The paper is not evidence that Manifold Garden uses this exact fit or a spline algorithm. |
+| [William Chyr — Edge Detection Shader Deep Dive, Part 1](https://williamchyr.com/edge-detection-shader-deep-dive-part-1-even-or-thinner-edges/) | Development context for uneven and doubled pixel outlines. The SIGGRAPH note is the main technical reference used here. |
+| [GLSL ES 3.00 specification](https://registry.khronos.org/OpenGL/specs/es/3.0/GLSL_ES_Specification_3.00.pdf) | Sampler precision and shadow lookup semantics; important when separating depth errors from pencil artifacts. |
+| [GPU Gems — Shadow Map Antialiasing](https://developer.nvidia.com/gpugems/gpugems/part-ii-lighting-and-shadows/chapter-11-shadow-map-antialiasing) | Filter comparisons rather than averaging raw depth values. |
+
+The original Dither3D shader and generator were inspected at commit [`34fa85832268dc0649aad24b1b4fe07420782724`](https://github.com/runevision/Dither3D/tree/34fa85832268dc0649aad24b1b4fe07420782724). Their volume slices encode density states, not scene depth. Dither3D is distributed under MPL-2.0; this repository's independently written implementation retains its MIT license.
+
+Art direction was informed by the broken contact, finite marks and pressure variation visible in [Adolph Menzel's Studies of a Young Woman](https://www.metmuseum.org/art/collection/search/460057) and [John Singer Sargent's Studies for Fumée d'Ambre Gris](https://www.nga.gov/artworks/184291-studies-fumee-dambre-gris). These are visual references, not algorithmic evidence or bundled textures. All repository demonstration images are captures of its own shader.
+
+The experimental contribution is the combination: canonical dyadic identities for finite procedural pencil segments, overlapping chart support, discrete births and redraws, plus independent fitted screen-space pencil contours. This is an exploratory rendering design, not a claim of peer-reviewed novelty or a proof of arbitrary-scale stability.
