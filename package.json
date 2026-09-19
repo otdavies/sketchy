@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node tests/browser.cjs",
+    "test": "node tests/browser.cjs && node tests/walking.cjs && node tests/perspective.cjs",
     "test:shadows": "node tests/shadows.cjs",
     "capture": "node scripts/capture.cjs"
   },

@@ -13,6 +13,7 @@
   const presets = {
     city: { scene: 3 },
     traffic: { scene: 4 },
+    walk: { scene: 5 },
     sculpture: { scene: 0, zoom: -0.45 },
     flat: { scene: 1 },
     tone: { scene: 2 },
@@ -123,6 +124,24 @@
     animationKind = "light",
     animationZoom = 0;
   const tickTimes = [];
+  const walker = createPencilWalk(canvas, root.querySelector('[data-walk-panel]'), requestDraw);
+  function updateNavigation() {
+    const walking = +controls.scene.value === 5;
+    walker.setEnabled(walking);
+    root.dataset.walking = String(walking);
+    controls.zoom.disabled = walking;
+    root.querySelector('[data-play-kind="zoom"]').disabled = walking;
+    canvas.setAttribute('aria-label', walking
+      ? 'Walk through town. WASD moves, arrow keys move and turn, and dragging looks around.'
+      : 'Pencil shading demo. Drag to orbit, or pan the flat surface. Use Zoom to inspect the strokes.');
+    if (walking) canvas.setAttribute('aria-describedby', 'walk-help');
+    else canvas.removeAttribute('aria-describedby');
+    const navigationHint = document.querySelector('[data-navigation-hint]');
+    if (navigationHint) navigationHint.textContent = walking
+      ? 'WASD to walk. Drag to look. Esc releases the mouse.' : 'Drag to orbit. Scroll to zoom.';
+  }
+  updateNavigation();
+  document.addEventListener("DOMContentLoaded", updateNavigation, { once: true });
   function draw() {
     pending = false;
     const now = performance.now();
@@ -130,6 +149,7 @@
     const requested = {
       yaw,
       pitch,
+      walkPose: +controls.scene.value === 5 ? walker.pose() : null,
       zoom: +controls.zoom.value,
       light: +controls.light.value,
       pan: [...pan],
@@ -174,7 +194,7 @@
     }
     if (committed || resized || !rendered) {
       if (held.scene >= 3) {
-        if (held.scene === 4 && !extendedRenderer)
+        if (held.scene >= 4 && !extendedRenderer)
           extendedRenderer = createPencilCity(
             gl,
             root.querySelector("[data-pencil-core]").textContent.trim(),
@@ -182,7 +202,7 @@
             root.querySelector("[data-composite-fragment]").textContent.trim(),
             true,
           );
-        (held.scene === 4 ? extendedRenderer : cityRenderer).draw(
+        (held.scene >= 4 ? extendedRenderer : cityRenderer).draw(
           held,
           w,
           h,
@@ -230,7 +250,7 @@
     controls.outline.disabled = !city || raw;
     controls.quality.disabled = !city || raw;
     controls.jitter.disabled = !city || raw || +controls.outline.value !== 2;
-    controls.traffic.disabled = +controls.scene.value !== 4;
+    controls.traffic.disabled = +controls.scene.value < 4;
     root.querySelector("[data-jitter-value]").textContent =
       (+controls.jitter.value).toFixed(2) + " px";
     status.textContent = raw
@@ -246,6 +266,7 @@
           "light to dark",
           "drag to orbit",
           "drag to orbit",
+          "walk through town",
         ][+controls.scene.value];
   }
   function expLabel(s) {
@@ -262,6 +283,8 @@
     e.addEventListener("input", requestDraw),
   );
   controls.scene.addEventListener("change", () => {
+    if (animationStart !== null) play(animationKind);
+    updateNavigation();
     controls.zoom.value = 0;
     pan = [0, 0];
     yaw = +controls.scene.value >= 3 ? 0.68 : 0.34;
@@ -275,7 +298,7 @@
       dt = Math.min(0.3, Math.max(0, (now - trafficLast) / 1000));
     trafficLast = now;
     if (
-      +controls.scene.value === 4 &&
+      +controls.scene.value >= 4 &&
       controls.traffic.checked &&
       !document.hidden
     ) {
@@ -284,6 +307,7 @@
     }
   }, 100);
   function play(kind) {
+    if (kind === "zoom" && +controls.scene.value === 5 && animationStart === null) return;
     const buttons = [...root.querySelectorAll("[data-play-kind]")];
     function labels() {
       buttons.forEach(
@@ -325,11 +349,12 @@
     );
   let pointer = null;
   canvas.addEventListener("pointerdown", (e) => {
+    if (+controls.scene.value === 5) return;
     pointer = { x: e.clientX, y: e.clientY, id: e.pointerId };
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
-    if (!pointer || e.pointerId !== pointer.id) return;
+    if (+controls.scene.value === 5 || !pointer || e.pointerId !== pointer.id) return;
     let dx = e.clientX - pointer.x,
       dy = e.clientY - pointer.y;
     pointer.x = e.clientX;
@@ -349,6 +374,7 @@
   canvas.addEventListener(
     "wheel",
     (e) => {
+      if (+controls.scene.value === 5) return;
       e.preventDefault();
       controls.zoom.value = Math.max(
         -2,
@@ -372,7 +398,7 @@
   root.fractalDemo = {
     draw,
     get cityRenderer() {
-      return held.scene === 4 ? extendedRenderer : cityRenderer;
+      return held.scene >= 4 ? extendedRenderer : cityRenderer;
     },
     setCamera: (y, p) => {
       yaw = y;

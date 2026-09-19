@@ -16,7 +16,7 @@ $$e=\max(|n_a\cdot\Delta P|,|n_b\cdot\Delta P|).$$
 
 This lets a sloping flat face remain clear; a raw depth-difference test would mark it as an edge. The threshold accounts for normal and depth quantization. Depth samplers use high precision.
 
-Crossings produce a seed position, an unoriented normal angle and a confidence value, packed into RGBA8. The depth reconstruction assumes the city's orthographic camera. Perspective cameras need their own position reconstruction.
+Crossings produce a seed position, an unoriented normal angle and a confidence value, packed into RGBA8. Orbit views reconstruct linear orthographic depth. Walking first linearizes perspective depth, then reconstructs each sample along its own view ray. The quantization allowance grows with distance, keeping sloping flat surfaces clear.
 
 ## Fitting a line
 

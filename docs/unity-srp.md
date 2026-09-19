@@ -41,7 +41,7 @@ Rigid objects should carry strokes with them. Nonuniform scaling needs matching 
 
 ## Camera and frame handling
 
-Replace the demo's orthographic depth equation with reconstruction for the engine's projection and depth convention. Test perspective, reversed Z, dynamic resolution, multiple cameras and XR eyes separately.
+Adapt the demo's orthographic and perspective reconstruction to the engine's projection and depth convention. Test perspective, reversed Z, dynamic resolution, multiple cameras and XR eyes separately.
 
 Quantizing a shader time value is insufficient if the camera and scene buffers keep updating underneath it. The drawing scheduler must capture a complete state. Keep the output in persistent resources; transient Render Graph textures are not frame history. Responsive UI can be drawn afterward.
 

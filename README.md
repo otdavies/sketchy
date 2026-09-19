@@ -18,6 +18,7 @@ With **Hold drawings** on, the whole image updates at most ten times a second. Z
 
 - Drag to orbit; scroll or use **Zoom** to move closer.
 - **Scene** switches between the city, traffic, sculpture and flat tests.
+- [**Walk through town**](https://otdavies.github.io/sketchy/?study=walk) offers WASD movement and drag-to-look. **Capture mouse** enables mouse-look; Esc releases it. Touch screens have movement buttons.
 - **Pencil fit** adds outline wiggle. **Stable fit** removes it.
 - **More controls** contains the shading comparisons, shadow views and quality settings.
 

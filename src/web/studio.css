@@ -47,3 +47,15 @@ footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12
   .form-label { font-size: 12px; }
   footer { padding: 0 12px 18px; }
 }
+
+[hidden] { display: none !important; }
+#fractal-hatching[data-walking="true"] canvas { height: min(65vh, 560px); min-height: 360px; cursor: crosshair; }
+canvas:focus-visible { outline: 2px solid #87b6ed; outline-offset: -2px; }
+.walk-controls { margin-top: 16px; }
+.walk-controls p, .walk-touch-hint { color: #b6c2d4; font-size: 12px; }
+.walk-actions, .walk-pad { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.canvas-frame { position: relative; }
+.walk-pad { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); flex-wrap: nowrap; }
+.walk-pad .btn { min-width: 44px; min-height: 44px; font-size: 20px; touch-action: none; user-select: none; }
+.walk-pad .btn:active { background: #475569; }
+.walk-touch-hint { width: 100%; }

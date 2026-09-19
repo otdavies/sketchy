@@ -17,7 +17,9 @@ flowchart TD
 
 ## Surface coordinates
 
-[`CitySurface.glsl`](../src/shaders/CitySurface.glsl) intersects each orthographic pixel ray with the geometric face plane. It derives position and pixel footprint from the same map. Mixing interpolated positions with unrelated analytical derivatives previously caused view-dependent errors.
+[`CitySurface.glsl`](../src/shaders/CitySurface.glsl) intersects each pixel ray with the geometric face plane. It derives position and pixel footprint from the same map. Mixing interpolated positions with unrelated analytical derivatives previously caused view-dependent errors.
+
+Orbit views use orthographic rays. Walking uses a 60° vertical perspective camera with near/far planes at 0.03 and 40 scene units. Its ray direction varies across the image; differentiating the ray–plane intersection gives the local pixel footprint. Both camera types feed the same pencil kernels.
 
 The chart axes stay fixed in world space. Camera motion changes their projection; light motion changes ink demand. Moving and deforming objects still need rest-space attachment.
 
@@ -42,7 +44,7 @@ Ground and flat decorative markings only receive shadows. Solid geometry casts t
 | Change | Image update | New stroke seed |
 |---|---|---|
 | Zoom or scene | Next drawing tick | Yes |
-| Orbit or light | Next drawing tick | No |
+| Orbit, walking or light | Next drawing tick | No |
 | Traffic | Next tick, using quantized scene time | No |
 | Style controls | Next drawing tick | No |
 | Idle | None | No |
@@ -60,8 +62,14 @@ A Unity port should keep the completed drawing in a persistent texture and displ
 | Pencil shading | Scene, tone or sampling changes |
 | Outline appearance | Seed, jitter or style changes |
 
-A depth prepass rejects hidden pencil work. Chart-specific shader variants omit unused charts. Ground shading uses a conservative screen scissor around possible shadows, while retaining the same triangles as the depth pass. Retriangulating that ground previously broke equal-depth testing.
+A depth prepass rejects hidden pencil work. Chart-specific shader variants omit unused charts. Ground shading uses a conservative screen scissor around possible shadows, while retaining the same triangles as the depth pass. The perspective path clips that rectangle against the near plane before dividing by clip-space W. Retriangulating the ground previously broke equal-depth testing.
 
 Fast mode uses two pencil evaluations per output pixel and available MSAA coverage. Reference shades at 2× width and height, then resolves four samples. Outline data stays at 2× in either mode. Only tests read pixels back to the CPU.
 
 Performance measurements should include the whole frame: shadows, shading, edge detection, fitting and composition. Software-GPU timing does not predict phone performance.
+
+## Walking controls
+
+[`first-person.js`](../src/web/first-person.js) owns keyboard, pointer and touch input. It integrates movement between drawing ticks; the renderer captures the eye and look angles together with the rest of the scene. Walking changes the camera, not the stroke seed.
+
+The camera stays at a fixed eye height. Small movement steps and sliding collision use rectangles collected from the town's static box geometry. Low curbs remain walkable; cars are visual only. Losing focus, hiding the page or leaving the mode clears held input.

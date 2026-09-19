@@ -1,6 +1,6 @@
 // Pure scene data: position, geometric face normal, material (7 floats).
 // The camera mesh starts with the ground. The caster mesh omits ground and decals.
-function buildPencilCityGeometry(extended = false, castersOnly = false) {
+function buildPencilCityGeometry(extended = false, castersOnly = false, colliders = null) {
   const sub = (a, b) => a.map((v, i) => v - b[i]),
     dot = (a, b) => a.reduce((s, v, i) => s + v * b[i], 0);
   const cross = (a, b) => [
@@ -28,6 +28,10 @@ function buildPencilCityGeometry(extended = false, castersOnly = false) {
   }
 
   function box(x, y, z, hx, hy, hz, mat = 0, casts = true) {
+    // Walking shares the actual building/prop dimensions. Curbs are walkable;
+    // high roofs and animated cars are excluded from these static obstacles.
+    if (colliders && mat < 16 && y - hy < .52 && y + hy > .18)
+      colliders.push([x - hx, z - hz, x + hx, z + hz]);
     const q = (a, b, c) => [x + a * hx, y + b * hy, z + c * hz];
     face(
       [q(-1, -1, 1), q(1, -1, 1), q(1, 1, 1), q(-1, 1, 1)],

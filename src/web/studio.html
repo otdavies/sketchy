@@ -1,11 +1,20 @@
 <div id="fractal-hatching">
-  <canvas role="img" aria-label="Pencil shading demo. Drag to orbit, or pan the flat surface. Use Zoom to inspect the strokes."></canvas>
+  <div class="canvas-frame">
+  <canvas tabindex="0" role="img" aria-label="Pencil shading demo. Drag to orbit, or pan the flat surface. Use Zoom to inspect the strokes."></canvas>
+        <div class="walk-pad" data-walk-pad hidden role="group" aria-label="Walking controls">
+          <button class="btn" type="button" data-walk-move="KeyA" aria-label="Walk left">←</button>
+          <button class="btn" type="button" data-walk-move="KeyW" aria-label="Walk forward">↑</button>
+          <button class="btn" type="button" data-walk-move="KeyS" aria-label="Walk backward">↓</button>
+          <button class="btn" type="button" data-walk-move="KeyD" aria-label="Walk right">→</button>
+        </div>
+  </div>
   <div class="controls-panel">
     <div class="main-controls">
       <label class="form-label">Scene
         <select class="form-select" data-control="scene">
           <option value="3" selected>Pencil city</option>
           <option value="4">City + traffic</option>
+          <option value="5">Walk through town</option>
           <option value="0">Sculpture</option>
           <option value="1">Flat surface</option>
           <option value="2">Tone ramp</option>
@@ -22,6 +31,14 @@
           <option value="0">Off</option><option value="1">Stable fit</option><option value="2" selected>Pencil fit</option><option value="3">Lines only</option>
         </select>
       </label>
+    </div>
+    <div class="walk-controls" data-walk-panel hidden>
+      <p id="walk-help" data-walk-hint>Click the drawing, then use WASD to walk and drag to look. Arrow keys move and turn. Shift walks faster. Esc releases the mouse.</p>
+      <div class="walk-actions">
+        <button class="btn" type="button" data-walk-capture>Capture mouse</button>
+        <button class="btn" type="button" data-walk-reset>Back to start</button>
+        <span class="walk-touch-hint">Hold an arrow to walk. Drag the drawing to look.</span>
+      </div>
     </div>
     <div class="playback">
       <label class="form-check"><input class="form-check-input" data-control="hold" type="checkbox" checked><span class="form-check-label">Hold drawings · 10 fps</span></label>

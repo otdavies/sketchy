@@ -22,7 +22,7 @@ def build():
         "const " + name + "=" + json.dumps(read(SHADERS / file)) + ";"
         for name, file in [("CITY_LIGHTING_GLSL", "CityLighting.glsl"), ("CITY_SURFACE_GLSL", "CitySurface.glsl")]
     )
-    javascript = "\n".join([read(WEB / "city-geometry.js"), modules, read(WEB / "city-renderer.js"), read(WEB / "demo.js")])
+    javascript = "\n".join([read(WEB / "city-geometry.js"), modules, read(WEB / "city-renderer.js"), read(WEB / "first-person.js"), read(WEB / "demo.js")])
     fragment = read(WEB / "studio.html")
     for token, value in {
         "SHADER_INSERT": scene,
@@ -42,7 +42,7 @@ def build():
 <body><header><div><a href="index.html" class="wordmark">Sketchy</a><span class="subtitle">Pencil shading for 3D scenes</span></div>
 <nav aria-label="Project"><a href="https://github.com/otdavies/sketchy#how-it-works">How it works</a><a href="https://github.com/otdavies/sketchy">Source</a></nav></header>
 <main>""" + fragment + """</main>
-<footer><span>Drag to orbit. Scroll to zoom.</span><span><a href="gallery.html">Examples</a> · <a href="https://github.com/otdavies/sketchy/blob/main/docs/references.md">References</a></span></footer>
+<footer><span data-navigation-hint>Drag to orbit. Scroll to zoom.</span><span><a href="gallery.html">Examples</a> · <a href="https://github.com/otdavies/sketchy/blob/main/docs/references.md">References</a></span></footer>
 </body></html>
 """
 

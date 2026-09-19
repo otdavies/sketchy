@@ -64,6 +64,29 @@ function createPencilCity(
       1,
     ];
   }
+  function perspective(fov, aspect, near, far) {
+    const f = 1 / Math.tan(fov / 2);
+    return [f / aspect, 0, 0, 0, 0, f, 0, 0,
+      0, 0, (far + near) / (near - far), -1,
+      0, 0, 2 * far * near / (near - far), 0];
+  }
+  // Clip the ground shadow rectangle before perspective division. Corners
+  // behind the walking camera must not invert or erase its screen bounds.
+  function groundScreenBounds(vp, bounds, near) {
+    const [x0, z0, x1, z1] = bounds;
+    const polygon = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([x, z]) =>
+      [0, 1, 3].map(i => vp[i] * x - vp[4 + i] * .01 + vp[8 + i] * z + vp[12 + i]));
+    const clipped = [];
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+      if (a[2] >= near) clipped.push(a);
+      if ((a[2] >= near) !== (b[2] >= near)) {
+        const t = (near - a[2]) / (b[2] - a[2]);
+        clipped.push(a.map((v, j) => v + t * (b[j] - v)));
+      }
+    }
+    return clipped.map(p => [p[0] / p[2] * .5 + .5, p[1] / p[2] * .5 + .5]);
+  }
   function mul(a, b) {
     let c = Array(16).fill(0);
     for (let j = 0; j < 4; j++)
@@ -282,6 +305,7 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
         "cameraUp",
         "cameraForward",
         "worldPerPixel",
+        "cameraPerspective",
         "sampleScale",
         "fastSampling",
         "trafficTime",
@@ -543,9 +567,10 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
   function draw(state, w, h, drawing) {
     resize(w, h);
     const blend = Math.min(1, Math.max(0, state.zoom / 2)),
-      target = [0.62 * blend, 0.85 + blend * 0.9, -0.05 * blend];
-    const eye = add(
-      target,
+      orbitTarget = [0.62 * blend, 0.85 + blend * 0.9, -0.05 * blend];
+    const walking = !!state.walkPose;
+    const eye = walking ? state.walkPose.eye : add(
+      orbitTarget,
       scale(
         [
           Math.sin(state.yaw) * Math.cos(state.pitch),
@@ -558,11 +583,17 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
     const half =
       ((extended ? 5.45 : 4.15) * Math.max(1, 1.2 / (w / h))) /
       Math.pow(2, state.zoom);
+    const target = walking ? add(eye, [
+      Math.sin(state.walkPose.yaw) * Math.cos(state.walkPose.pitch),
+      Math.sin(state.walkPose.pitch),
+      -Math.cos(state.walkPose.yaw) * Math.cos(state.walkPose.pitch),
+    ]) : orbitTarget;
     const view = look(eye, target),
-      vp = mul(
-        ortho((-half * w) / h, (half * w) / h, -half, half, 0.1, 40),
-        view,
-      );
+      vp = mul(walking ? perspective(Math.PI / 3, w / h, .03, 40)
+        : ortho((-half * w) / h, (half * w) / h, -half, half, 0.1, 40), view);
+    // Perspective scale is measured at unit view depth. Surface/edge passes
+    // multiply by their actual depth; the orbit path keeps its original scale.
+    const pixelScale = walking ? 2 * Math.tan(Math.PI / 6) / h : (half * 2) / h;
     buffers.viewProjection = vp;
     const right = [view[0], view[4], view[8]],
       up = [view[1], view[5], view[9]],
@@ -639,6 +670,7 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
       state.zoom,
       state.yaw,
       state.pitch,
+      state.walkPose,
       w,
       h,
       trafficTime,
@@ -702,7 +734,8 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
       gl.uniform3fv(ru.cameraRight, right);
       gl.uniform3fv(ru.cameraUp, up);
       gl.uniform3fv(ru.cameraForward, forward);
-      gl.uniform1f(ru.worldPerPixel, (half * 2) / h);
+      gl.uniform1f(ru.worldPerPixel, pixelScale);
+      gl.uniform1i(ru.cameraPerspective, walking ? 1 : 0);
       gl.uniform1f(ru.sampleScale, scaleFactor);
       gl.uniform3fv(ru.lightDirection, light);
       gl.uniform3fv(ru.lightRight, [lightView[0], lightView[4], lightView[8]]);
@@ -725,16 +758,8 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
         if (batch.isGround) {
           // Clip pixels, not the plane mesh. Re-triangulating the ground changed
           // rasterized depth as the camera rotated, making whole shadows vanish.
-          const [x0, z0, x1, z1] = groundBounds,
-            coords = [
-              [x0, z0],
-              [x0, z1],
-              [x1, z0],
-              [x1, z1],
-            ].map(([x, z]) => [
-              (vp[0] * x - vp[4] * 0.01 + vp[8] * z + vp[12]) * 0.5 + 0.5,
-              (vp[1] * x - vp[5] * 0.01 + vp[9] * z + vp[13]) * 0.5 + 0.5,
-            ]);
+          const coords = groundScreenBounds(vp, groundBounds, walking ? .03 : .1);
+          if (!coords.length) continue;
           const sw = w * scaleFactor,
             sh = h * scaleFactor;
           const left = Math.max(
@@ -793,7 +818,8 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
         gl.uniform3fv(fu.cameraRight, right);
         gl.uniform3fv(fu.cameraUp, up);
         gl.uniform3fv(fu.cameraForward, forward);
-        gl.uniform1f(fu.worldPerPixel, (half * 2) / h);
+        gl.uniform1f(fu.worldPerPixel, pixelScale);
+        gl.uniform1i(fu.cameraPerspective, walking ? 1 : 0);
         gl.uniform1f(fu.sampleScale, scaleFactor);
         gl.uniform1i(fu.fastSampling, fast ? 1 : 0);
         gl.uniform1f(fu.drawing, drawing);
@@ -842,7 +868,8 @@ void main(){vec2 p=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2));gl_Posit
         gl.uniform3fv(eu.cameraRight, right);
         gl.uniform3fv(eu.cameraUp, up);
         gl.uniform3fv(eu.cameraForward, forward);
-        gl.uniform1f(eu.worldPerPixel, (half * 2) / h);
+        gl.uniform1f(eu.worldPerPixel, pixelScale);
+        gl.uniform1i(eu.cameraPerspective, walking ? 1 : 0);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         stats.lastPass = "fit";
         gl.bindFramebuffer(gl.FRAMEBUFFER, buffers.fittedFbo);
