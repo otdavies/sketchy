@@ -1,12 +1,13 @@
-# Validation
+# Tests and builds
 
-The browser demo is the executable reference. HLSL translations and Unity integration are not validated here. Tests use Chromium with SwiftShader; a passing software-renderer check does not establish correctness or performance on a physical phone.
+The demo runs in WebGL2. Tests use Chromium with SwiftShader. They do not establish performance or correctness on a physical phone, and the HLSL translations have not been tested in Unity.
 
-## Run the focused checks
+## Build and test locally
 
-From the repository root:
+Python 3.10+ builds the self-contained demo without extra packages. Node 20+ and Playwright run the browser tests.
 
 ```sh
+python scripts/build.py
 python scripts/build.py --check
 python tests/invariants.py
 npm ci
@@ -15,32 +16,40 @@ npm test
 npm run test:shadows
 ```
 
-On Linux, Playwright may also need its documented system dependencies (`npx playwright install --with-deps chromium`). To use an existing Chromium, set `BROWSER_EXECUTABLE_PATH`; in PowerShell use `$env:BROWSER_EXECUTABLE_PATH = 'C:\path\to\chrome.exe'`. No environment variable is needed when using Playwright's installed browser.
+On Linux, use `npx playwright install --with-deps chromium` if browser system dependencies are missing. To use an existing browser, set `BROWSER_EXECUTABLE_PATH`. In PowerShell:
 
-| Check | What it establishes |
+```powershell
+$env:BROWSER_EXECUTABLE_PATH = 'C:\path\to\chrome.exe'
+```
+
+| Test | Checks |
 |---|---|
-| `scripts/build.py --check` | The committed offline demo matches the editable sources |
-| `tests/invariants.py` | Parent identity and lattice nesting across levels, analytic engraving continuity, approved core hashes |
-| `tests/browser.cjs` | All five studies render; pencil wiggle changes with seed; held images repeat; light/orbit preserve seed; raw diagnostics bypass style; both sampling paths compile; named demo entries and mobile layout work |
-| `tests/shadows.cjs` | Known lit/reverse faces and clear/shadowed/distant ground agree with an independent CPU ray/box oracle across light/camera/zoom changes |
+| `scripts/build.py --check` | Generated demo matches its sources |
+| `tests/invariants.py` | Stroke IDs, nested centers, engraving continuity and approved shader hashes |
+| `tests/browser.cjs` | Scene rendering, outline wiggle, held frames, seed stability, diagnostic views and mobile layout |
+| `tests/shadows.cjs` | Rendered visibility against a CPU ray/box test across light, camera and zoom changes |
 
-The shadow oracle runs 384 views with float32 shadow storage and repeats them with **actual depth16 storage**. Each storage run checks 5,616 lit-face samples, 2,160 reverse-face samples, 39,636 clear-ground samples, 2,232 receiving-shadow samples and 30,288 distant-ground samples. Silhouette-crossing pixel footprints are excluded. Both runs in the reorganized repository passed with zero failures. Set `SHADOW_REPORT` to a local output path to retain its JSON report.
+The shadow test runs 384 views with float32 depth storage, then repeats with actual depth16 storage. Each run checks 5,616 lit-face samples, 2,160 reverse-face samples, 39,636 clear-ground samples, 2,232 shadowed-ground samples and 30,288 distant-ground samples at the original fixture viewport. Counts vary with the viewport layout. Pixels that cross silhouettes are excluded. Both original runs passed without failures. Set `SHADOW_REPORT` to retain the JSON output.
 
-The dependency-free tests are mathematical checks plus an appearance guard, not a second implementation of the complete pencil shader. GPU parity and image behavior are separate evidence. Do not replace visual review with a hash update when deliberately changing a locked kernel.
+The hash checks protect the approved hatching kernels. A deliberate shader change still needs visual review; updating the hash alone is not validation.
 
-## Review the drawings
+## GitHub Pages
 
-Open `demos/index.html`. Check empty lit faces, layered deep shadows, scale transitions on the flat surface, chart blending on the sculpture, contour corners, and a full orbit/light rotation in both cities. Use **Stable fit** to isolate the intentional pencil deviation. Use **Raw shadows** before attributing an unexpected dark mark to hatching.
+The [Pages workflow](../.github/workflows/pages.yml) builds the site on each push to `main`. Repository Settings → Pages must use **GitHub Actions** as the source. The published entry point opens the interactive demo directly.
 
-`npm run capture` regenerates the four committed gallery PNGs from the actual shader at fixed camera/light/traffic states. These are demonstration captures, not cross-GPU golden images. The gallery has no generated illustration or borrowed art asset.
+To inspect the same files locally:
 
-## Remaining limits
+```sh
+python scripts/build.py --site _site
+python -m http.server 8000 --directory _site
+```
 
-- The city uses orthographic planar reconstruction and a fixed directional shadow volume.
-- Extreme scale, near-tangent geometry, thin contours and contour junctions remain research cases.
-- The paper tone response and anisotropic filtering are approximate.
-- Camera motion can change nearest contour descriptors; there is no temporal contour correspondence.
-- Cars demonstrate held scene motion, not solved rest-space hatch attachment.
-- No current hardware speedup or mobile frame-rate claim is made. Measure the whole frame on the target device.
+Open `http://localhost:8000`. `demos/index.html` also works as a local file.
 
-Historical captures, failed experiments and successive fix logs are not included in this small repository. The current contracts are consolidated in [pipeline](pipeline.md), with original research attribution in [references](references.md).
+## Visual review
+
+Check lit faces, deep shadows, flat-surface zoom transitions, curved chart blends and contour corners. Rotate the camera and light in both cities. Stable fit removes intentional outline wiggle; Raw shadows helps distinguish a lighting error from a pencil mark.
+
+`npm run capture` recreates the four example PNGs at fixed camera, light and traffic states. They are actual shader captures, not cross-GPU reference images.
+
+Known limits include finite precision and octave range, approximate tone/filtering, contour jumps at descriptor changes, and the city's orthographic camera. Cars still move through a world-space hatch field. See [rendering](pipeline.md) and the [Unity plan](unity-srp.md) for the work these imply.

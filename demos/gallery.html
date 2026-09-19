@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Sketchy examples</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font:
+          15px/1.6 system-ui,
+          sans-serif;
+        color: #282724;
+        background: #f4f1e9;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        max-width: 1160px;
+        margin: auto;
+        padding: 28px;
+      }
+      header,
+      footer {
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 18px;
+        padding-bottom: 18px;
+        border-bottom: 1px solid #d5d0c5;
+      }
+      a {
+        color: inherit;
+        text-underline-offset: 4px;
+      }
+      header a {
+        align-self: center;
+        font-size: 13px;
+      }
+      .wordmark {
+        font:
+          500 29px Georgia,
+          serif;
+        text-decoration: none;
+      }
+      .intro {
+        margin: 50px 0 36px;
+        max-width: 760px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: #696456;
+      }
+      h1 {
+        font:
+          400 clamp(38px, 6vw, 66px) / 1.08 Georgia,
+          serif;
+        margin: 17px 0;
+      }
+      .intro p {
+        max-width: 60ch;
+        color: #686256;
+      }
+      .studies {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 36px 24px;
+      }
+      article img {
+        display: block;
+        width: 100%;
+        height: auto;
+        background: #faf7ef;
+      }
+      article h2 {
+        font:
+          400 25px Georgia,
+          serif;
+        margin: 14px 0 7px;
+      }
+      article p {
+        color: #686256;
+        margin: 0;
+        font-size: 14px;
+      }
+      .number {
+        font:
+          12px system-ui,
+          sans-serif;
+        color: #78715f;
+        margin-right: 9px;
+      }
+      article a {
+        text-decoration: none;
+      }
+      article a:hover h2 {
+        text-decoration: underline;
+        text-underline-offset: 5px;
+      }
+      .more {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 13px 25px;
+        margin: 35px 0;
+        border-top: 1px solid #d5d0c5;
+        padding-top: 20px;
+        font-size: 14px;
+      }
+      footer {
+        margin-top: 42px;
+        border-top: 1px solid #d5d0c5;
+        border-bottom: 0;
+        padding-top: 18px;
+        font-size: 12px;
+        color: #686256;
+      }
+      @media (max-width: 620px) {
+        body {
+          padding: 20px 14px;
+        }
+        .intro {
+          margin: 32px 0;
+        }
+        .studies {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <a href="index.html" class="wordmark">Sketchy</a
+      ><a href="https://github.com/otdavies/sketchy"
+        >Source</a
+      >
+    </header>
+    <main>
+      <div class="intro">
+        <h1>Examples</h1>
+        <p>
+          Choose a scene to try the hatching, outlines or lighting.
+        </p>
+      </div>
+      <div class="studies">
+        <article>
+          <a href="index.html?study=city"
+            ><img
+              src="../docs/images/city.png"
+              width="960"
+              height="400"
+              alt="Nested graphite shading on a small architectural city"
+            />
+            <h2><span class="number">01</span>Pencil city ↗</h2></a
+          >
+          <p>
+            Sunlit paper, layered cast shadows, and imperfect architectural
+            lines.
+          </p>
+        </article>
+        <article>
+          <a href="index.html?study=sculpture"
+            ><img
+              src="../docs/images/sculpture.png"
+              width="960"
+              height="400"
+              alt="Pencil strokes on a curved sculpture"
+            />
+            <h2><span class="number">02</span>Curved surfaces ↗</h2></a
+          >
+          <p>
+            Zoom to see new strokes appear on curved surfaces.
+          </p>
+        </article>
+        <article>
+          <a href="index.html?study=outlines"
+            ><img
+              src="../docs/images/outlines.png"
+              width="960"
+              height="400"
+              alt="Isolated fitted outlines of the city"
+            />
+            <h2><span class="number">03</span>Outlines ↗</h2></a
+          >
+          <p>
+            View the fitted lines without shading.
+          </p>
+        </article>
+        <article>
+          <a href="index.html?study=traffic"
+            ><img
+              src="../docs/images/traffic.png"
+              width="960"
+              height="400"
+              alt="An extended pencil city with roads and cars"
+            />
+            <h2><span class="number">04</span>City with traffic ↗</h2></a
+          >
+          <p>
+            Distant buildings, roads and four cars.
+          </p>
+        </article>
+      </div>
+      <nav class="more" aria-label="Diagnostic studies">
+        <a href="index.html?study=flat">Flat surface</a
+        ><a href="index.html?study=tone">Tone ramp</a
+        ><a href="index.html?study=shadows">Raw shadows</a
+        ><a
+          href="https://github.com/otdavies/sketchy/blob/main/docs/unity-srp.md"
+          >Unity porting plan</a
+        >
+      </nav>
+    </main>
+    <footer>
+      <span>Images captured from the demo</span
+      ><span>MIT license</span>
+    </footer>
+  </body>
+</html>

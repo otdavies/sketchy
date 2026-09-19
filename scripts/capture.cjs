@@ -19,7 +19,7 @@ const { pathToFileURL } = require("node:url");
   try {
     for (const name of ["city", "sculpture", "outlines", "traffic"]) {
       await page.goto(
-        pathToFileURL(path.join(__dirname, "../demos/studio.html")).href +
+        pathToFileURL(path.join(__dirname, "../demos/index.html")).href +
           "?study=" +
           name,
       );

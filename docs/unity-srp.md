@@ -1,65 +1,61 @@
-# Toward a Unity paper drawing pipeline
+# Unity port
 
-This is a proposed architecture and acceptance plan. There is no installable Unity package in this repository yet. The HLSL files in [`reference/hlsl/`](../reference/hlsl/) translate the kernels; they have not been compiled or validated in Unity.
+The goal is a drop-in paper drawing pipeline. The browser demo supplies a visual reference; the [`HLSL kernels`](../reference/hlsl/) are uncompiled translations. A Unity package still needs material integration, render passes and resource management.
 
-The intended experience is a scene rendered as a coherent drawing: empty lit paper, surface-attached graphite, controlled architectural contours, and optional held animation. A full-screen color filter alone cannot provide stable surface coordinates or object attachment.
+## Start with URP
 
-## Package boundaries
+Use URP's culling and shadows for the first port. This lets us test the drawing without also writing a lighting engine. Unity's [Render Graph documentation](https://docs.unity3d.com/6000.0/Documentation/Manual/urp/render-graph.html) covers custom passes. Pin a Unity/URP version before choosing the APIs and pass injection points.
 
-| Proposed component | Owns |
+The same drawing passes could later run in a custom SRP. Keep their math separate from the engine adapter.
+
+| Component | Responsibility |
 |---|---|
-| Paper style asset | Paper/graphite colors, density, pressure, outline width/jitter, tone response and drawing cadence |
-| Material adapter | Ink demand, stable object/rest coordinates, geometric and shading normals, outline category, cast/receive flags |
-| Hatching core | Canonical stroke identity, families, charts, birth rules and filtering |
-| Contour passes | Metadata, edge seeds, local fit, occupancy and line composition |
-| Drawing scheduler | Captured scene state, separate stroke seed, persistent output texture, per-camera lifetime |
-| Render-pipeline adapter | Culling, lights/shadows, projection/depth conventions, resource lifetime and engine integration |
+| Paper style asset | Colors, density, pressure, outline width, jitter and drawing rate |
+| Material adapter | Ink demand, object/rest coordinates, normals, outline category and shadow flags |
+| Hatching | Stroke IDs, families, charts, birth rules and filtering |
+| Outlines | Edge samples, line fitting and pencil composition |
+| Drawing scheduler | Captured scene state, stroke seed and persistent output texture per camera |
+| Pipeline adapter | Culling, lighting, depth conventions and resource lifetime |
 
-Keep the math independent of pipeline plumbing. The browser should remain a compact visual reference while Unity becomes the production renderer. Select and pin a Unity/URP version at the start of implementation rather than promise broad version support from untested sketches.
+## First working version
 
-## First integration: URP as the host
+1. Render opaque geometry with one directional light. Keep Light only and Raw shadows available.
+2. Supply stable rest coordinates and material IDs through a material or metadata pass. Depth and normals alone cannot recover an object's intended hatch coordinates.
+3. Run hatching with derivatives of those same coordinates. Compare the flat ramp and sculpture against the browser before adding complex materials.
+4. Render subpixel edge data, fit the lines and composite their pencil appearance after hatching.
+5. Capture camera, lights and object state together at each drawing tick. Retain the completed texture between ticks.
 
-An initial URP adapter can prove the rendering contracts using Unity's existing culling and shadow infrastructure. Unity documents the [Render Graph system](https://docs.unity3d.com/6000.0/Documentation/Manual/urp/render-graph.html) as the API for authoring render passes. The concrete APIs and injection points must be chosen for the pinned package version.
-
-1. Add an explicit paper-material pass, or a metadata pass that supplies stable rest coordinates and material IDs. Normal/depth alone cannot recover every object's intended hatch frame.
-2. Feed unshadowed illumination and shadow visibility through a separate artistic ink-demand function. Begin with one directional light and opaque geometry; preserve raw inspection views.
-3. Run the HLSL hatching core using derivatives of the same rest-coordinate mapping being shaded. Confirm appearance against the WebGL flat and sculpture studies before adding complex materials.
-4. Produce subpixel edge metadata, seed and fit passes, then composite the outlines after hatching. Keep geometrical estimation free of artistic noise.
-5. Retain the finished drawing in a persistent texture. Capture the camera, lights and visible object state together on a drawing tick; present that texture between ticks.
-
-This is a route to the broader paper pipeline, not a decision to abandon a custom SRP. A dedicated SRP can later own the same material, lighting and drawing contracts when full control is useful. Avoid implementing a second shadow system before the drawing stages are validated against the engine's lighting.
-
-## Inputs that must be explicit
+## Coordinates and materials
 
 | Input | Required meaning |
 |---|---|
-| Rest position and derivatives | A stable chart domain; both expressed in the same coordinate frame |
-| Object identity | Separates overlapping object charts without changing on camera movement |
-| Geometric normal | Visibility, plane tests and receiver-plane calculations |
-| Appearance normal | Optional artistic chart or lighting input; not a substitute for geometric normals |
-| Ink demand | A defined 0–1 material/tone signal; zero means no hatch ink |
-| Drawing seed | Stable for a held drawing; independent of wall-clock time and shadow sampling |
-| Pixel footprint | Measured in final output pixels, accounting for dynamic resolution and supersampling |
+| Rest position and derivatives | A stable surface map, all in the same coordinate frame |
+| Object ID | Identifies an object's strokes independently of camera motion |
+| Geometric normal | Used for visibility and plane tests |
+| Appearance normal | May affect artistic shading; must not replace the geometric normal in plane tests |
+| Ink demand | A 0–1 tone value; zero means no hatch ink |
+| Drawing seed | Fixed for the drawing, separate from time and shadow sampling |
+| Pixel footprint | Measured in output pixels, including render scale and supersampling |
 
-Rigid objects should carry rest/object-space strokes through motion. Nonuniform scale needs consistent derivative and normal transforms. Skinned meshes need a persistent rest domain plus deformed derivatives; sampling world position will swim. Large scenes need stable local origins or integer cell addressing that does not silently re-key parent strokes.
+Rigid objects should carry strokes with them. Nonuniform scaling needs matching normal and derivative transforms. Skinned meshes need a persistent rest domain with deformed derivatives; world-space sampling would swim. Large worlds need stable local origins or integer addressing that preserves stroke IDs.
 
-## Projection and resource rules
+## Camera and frame handling
 
-Do not copy the city's fixed orthographic depth equation into a perspective camera. Reconstruct positions using the actual projection, render-target orientation and engine depth convention. Test orthographic, perspective, reversed Z and dynamic resolution explicitly. Treat XR eyes and multiple cameras as separate state owners.
+Replace the demo's orthographic depth equation with reconstruction for the engine's projection and depth convention. Test perspective, reversed Z, dynamic resolution, multiple cameras and XR eyes separately.
 
-The drawing clock must control when scene buffers are consumed, not merely quantize one shader uniform while transforms continue changing beneath it. Retain output across frames with persistent resources; transient render-graph textures cannot serve as implicit history. Keep UI outside the held image if it should remain responsive.
+Quantizing a shader time value is insufficient if the camera and scene buffers keep updating underneath it. The drawing scheduler must capture a complete state. Keep the output in persistent resources; transient Render Graph textures are not frame history. Responsive UI can be drawn afterward.
 
-Decide whether post-processing happens before the held image or after presentation. Temporal antialiasing and motion blur must not interpolate the drawing layer by default. Spatial antialiasing remains necessary. A fixed seed in Continuous mode is a useful coordinate diagnostic, separate from artistic redraw.
+Choose where post-processing belongs. By default, TAA and motion blur should not blend the held drawing. Spatial antialiasing is still needed. Continuous mode with a fixed seed remains useful for finding coordinate errors.
 
-## Milestones and evidence
+## Checks before calling it a drop-in
 
-| Milestone | Done when |
+| Stage | Required check |
 |---|---|
-| Kernel parity | Flat ramp and canonical stroke tests agree within a documented GPU tolerance; no line re-keying at an octave boundary |
-| Surface integration | Static, rigid-moving and scaled objects keep their markings through camera/light motion |
-| Contours | Isolated planes have no false edges; silhouettes and creases maintain a measured pixel width; corners have reviewed captures |
-| Drawing clock | Entire output is unchanged between ticks; zoom redraws are discrete; light/orbit do not reroll strokes |
-| Pipeline package | Sample scene, style asset, editor setup, multiple-camera lifecycle and clean install/uninstall work in the pinned Unity version |
-| Hardware qualification | Measured full-frame cost and captured light/orbit/zoom sweeps on desktop and representative mobile GPUs |
+| Shader port | Flat ramp and stroke-ID tests agree within a recorded GPU tolerance |
+| Surface attachment | Static, moving and scaled objects retain their markings during camera and light motion |
+| Outlines | Flat interiors stay clear; widths, corners and creases have reviewed captures |
+| Drawing clock | Frames remain identical between ticks; zoom redraws are discrete; orbit and light preserve seeds |
+| Package | Sample scene, style asset, editor setup and multi-camera cleanup work in the pinned Unity version |
+| Hardware | Full-frame timings and light/orbit/zoom captures pass on desktop and representative phones |
 
-Open research priorities: confidence-aware curved contours, a better directional surface atlas, tone calibration that preserves overlapping graphite, and adaptive sampling without changing mark identity. Keep those as separable experiments so performance work cannot quietly replace the established pencil style.
+Curved contour fitting, directional surface atlases and better tone calibration remain separate research tasks. They should not silently change the established pencil style during the port.

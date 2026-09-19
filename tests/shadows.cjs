@@ -33,7 +33,7 @@ const { chromium } = require("playwright"),
         };
       });
     await page.goto(
-      pathToFileURL(path.join(__dirname, "../demos/studio.html")).href,
+      pathToFileURL(path.join(__dirname, "../demos/index.html")).href,
     );
     const report = await page.evaluate(() => {
       const root = document.getElementById("fractal-hatching"),

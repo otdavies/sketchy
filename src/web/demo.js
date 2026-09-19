@@ -30,7 +30,7 @@
   });
   if (!gl) {
     status.textContent =
-      "This preview requires WebGL 2. Download the source to run it locally.";
+      "This demo needs a browser with WebGL 2 enabled.";
     status.setAttribute("role", "alert");
     return;
   }
@@ -238,12 +238,12 @@
         ? "Light only · no cast shadows"
         : "Raw shadows · white: sunlit · black: shaded"
       : (controls.hold.checked
-          ? "Held drawings · 10 fps · "
-          : "Continuous study · ") +
+          ? "10 fps max · "
+          : "Continuous · ") +
         [
           "drag to orbit",
           "drag to pan",
-          "paper → graphite",
+          "light to dark",
           "drag to orbit",
           "drag to orbit",
         ][+controls.scene.value];

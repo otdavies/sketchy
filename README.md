@@ -1,64 +1,32 @@
 # Sketchy
 
-Surface-stable pencil hatching and fitted screen-space outlines. A small rendering research project on the way to a Unity **paper drawing pipeline**.
+Pencil shading for 3D scenes. Zooming adds new hatch strokes between existing ones; screen-space outlines give the edges a slight pencil wobble.
 
-![A city rendered with nested graphite strokes and pencil contours](docs/images/city.png)
+## [Try the demo](https://otdavies.github.io/sketchy/)
 
-## Try it
+[![Pencil shading and outlines on a small city](docs/images/city.png)](https://otdavies.github.io/sketchy/)
 
-Download or clone this repository and open **[demos/index.html](demos/index.html)** in a WebGL2 browser. The studio is self-contained and works offline. No installation or build is needed to explore it. GitHub's file viewer shows the HTML source; open the downloaded file in a browser.
+## How it works
 
-| Study | What to look for |
-|---|---|
-| Pencil city | Bright paper, layered shadow strokes, fitted pencil contours |
-| City + traffic | Distant buildings and four cars on a simple road loop |
-| Sculpture | Curved surfaces without latitude/longitude hatch poles |
-| Flat surface / tone ramp | Stroke ancestry, scale transitions, and ink accumulation |
-| Outlines / raw shadows | Isolate contour fitting and direct-light visibility |
+The hatching builds on [Rune Skovbo Johansen's fractal dithering](https://runevision.com/tech/dither3d/). Each stroke keeps the same identity as the pattern subdivides, so its length and pressure don't reset at every scale change. Darker areas build up overlapping strokes; fully lit areas stay clear.
 
-Drag to orbit. Zoom from 0.25× to 64×. **Pencil fit** is the default: its subpixel wiggle and pressure variation return the living-sketch character. **Stable fit** provides the clean comparison. **Hold drawings** commits complete drawings at up to 10 Hz, with fresh variations during zoom and no frame blending. Idle drawings stay still.
+The outlines use depth and normal samples to find edges, then fit a short line through nearby samples. Width and wiggle are measured in pixels. This follows the screen-space approach described in [Manifold Garden's rendering retrospective](https://history.siggraph.org/wp-content/uploads/2022/08/2020-Talks-Brussee_Thats-a-wrap_-Manifold-Garden-rendering-retrospective.pdf), with a local line fit and pencil shading added here.
 
-## The ideas
+With **Hold drawings** on, the whole image updates at most ten times a second. Zooming gives each drawing small stroke variations. There is no blending between frames.
 
-**Hatching belongs to the surface.** Magnification inserts new strokes between existing ones. A reduced dyadic coordinate gives each parent a persistent identity across scale changes; endpoints, pressure and birth rank derive from that identity. Three overlapping charts support curved surfaces, and darker tones accumulate crossing graphite strokes. Fully lit regions contain no hatch ink.
+## Controls
 
-**Outlines belong to the image.** Depth, normal and material boundaries produce subpixel edge samples. A local total-least-squares fit estimates the contour direction; a pixel-distance field controls coverage. Pencil displacement is applied after fitting, so expressive irregularity cannot contaminate edge detection.
+- Drag to orbit; scroll or use **Zoom** to move closer.
+- **Scene** switches between the city, traffic, sculpture and flat tests.
+- **Pencil fit** adds outline wiggle. **Stable fit** removes it.
+- **More controls** contains the shading comparisons, shadow views and quality settings.
 
-**The drawing has its own clock.** Geometry, camera, lighting, hatching and outlines are sampled together. The completed image is held. A seed change is an artistic redraw, not a replacement for stable coordinates.
+## Research and source
 
-| Read | Focus |
-|---|---|
-| [Hatching](docs/hatching.md) | Dyadic ancestry, finite strokes, chart weights, filtering and limits |
-| [Outlines](docs/outlines.md) | Subpixel detection, local fitting, pencil wiggle |
-| [Pipeline](docs/pipeline.md) | Pass dependencies, shadows, coordinate and temporal contracts |
-| [Unity direction](docs/unity-srp.md) | Proposed package boundaries, SRP integration and acceptance gates |
-| [Validation](docs/validation.md) | Reproducible checks and what remains unverified |
-| [Sources](docs/references.md) | Original research and the boundary of this experiment's contribution |
+[Hatching](docs/hatching.md) · [Outlines](docs/outlines.md) · [Rendering](docs/pipeline.md) · [Sources](docs/references.md)
 
-## Work on it
+Shaders are in `src/shaders/`; the scene and WebGL code are in `src/web/`. Run `python scripts/build.py` after editing them. The generated demo also works offline. See [tests and build instructions](docs/validation.md).
 
-Python 3.10+ builds the demos using only its standard library:
+The next goal is a Unity paper drawing pipeline. [The porting plan](docs/unity-srp.md) records the required passes and unresolved work. The HLSL translations are included as references, but there is no Unity package yet.
 
-```sh
-python scripts/build.py
-python tests/invariants.py
-```
-
-Node 20+ and Playwright are needed only for browser checks:
-
-```sh
-npm ci
-npx playwright install chromium
-npm test
-npm run test:shadows
-```
-
-`src/shaders/` contains the rendering math; `src/web/` contains the scene and WebGL harness. `reference/hlsl/` holds uncompiled HLSL translations for the future port. Edit source files, then rebuild; `demos/studio.html` is generated. See [validation](docs/validation.md) for browser overrides and screenshot regeneration.
-
-## Status and lineage
-
-This is a working WebGL2 research prototype, **not yet an installable Unity render pipeline**. The city uses an orthographic camera and planar faces. Perspective integration, object/rest-space anchoring for moving geometry, robust contour junctions and physical mobile-GPU validation remain open.
-
-The starting point is [Rune Skovbo Johansen's Surface-Stable Fractal Dithering](https://runevision.com/tech/dither3d/) and its [original implementation](https://github.com/runevision/Dither3D). Scale-coherent hatching also has established roots in [Real-Time Hatching](https://hhoppe.com/proj/hatching/). The screen-space contour direction is informed by [Manifold Garden's rendering retrospective](https://history.siggraph.org/wp-content/uploads/2022/08/2020-Talks-Brussee_Thats-a-wrap_-Manifold-Garden-rendering-retrospective.pdf). Sketchy's kernels are independently written; no upstream code, paper PDFs or artwork are bundled. See [attribution](docs/references.md).
-
-MIT licensed. The approved hatching kernels are fingerprinted in `tests/hatching-lock.json` so integration cleanup cannot silently redesign the pencil.
+MIT license. The [tests](https://github.com/otdavies/sketchy/actions/workflows/checks.yml) check stroke identity, held frames and shadow visibility.

@@ -20,7 +20,7 @@ const { pathToFileURL } = require("node:url");
   page.on("pageerror", (e) => errors.push(e.message));
   try {
     await page.goto(
-      pathToFileURL(path.join(__dirname, "../demos/studio.html")).href,
+      pathToFileURL(path.join(__dirname, "../demos/index.html")).href,
     );
     const report = await page.evaluate(() => {
       const root = document.getElementById("fractal-hatching");
@@ -164,7 +164,7 @@ const { pathToFileURL } = require("node:url");
       ["sculpture", 0, 2],
     ]) {
       await page.goto(
-        pathToFileURL(path.join(__dirname, "../demos/studio.html")).href +
+        pathToFileURL(path.join(__dirname, "../demos/index.html")).href +
           "?study=" +
           name,
       );
@@ -175,7 +175,7 @@ const { pathToFileURL } = require("node:url");
       assert.equal(state.outline, outline);
     }
     await page.goto(
-      pathToFileURL(path.join(__dirname, "../demos/index.html")).href,
+      pathToFileURL(path.join(__dirname, "../demos/gallery.html")).href,
     );
     assert.equal(
       await page.evaluate(

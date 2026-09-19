@@ -1,69 +1,67 @@
-# Rendering and drawing contracts
+# Rendering
 
-The browser is a reference implementation, with a deliberately small procedural city. The portable ideas are the hatching kernel, the contour stages, the lighting-to-ink boundary and the complete-frame drawing policy.
+The renderer captures one scene state, computes its shadows and strokes, then holds the finished image until the next drawing tick.
 
 ```mermaid
 flowchart TD
-    State[Held scene state] --> Depth[Depth and normal metadata]
+    State[Captured scene state] --> Depth[Depth and normals]
     State --> Shadow[Shadow visibility]
-    Depth --> Seeds[Subpixel edge seeds]
-    Seeds --> Fit[Local line descriptors]
-    Shadow --> Tone[Artistic ink demand]
-    Tone --> Hatch[Surface pencil strokes]
-    Fit --> Compose[Paper and pencil composition]
+    Depth --> Seeds[Edge samples]
+    Seeds --> Fit[Local line fits]
+    Shadow --> Tone[Ink demand]
+    Tone --> Hatch[Hatching]
+    Fit --> Compose[Paper and outline composition]
     Hatch --> Compose
-    Compose --> Hold[Held output image]
+    Compose --> Hold[Held image]
 ```
 
-## Coordinate contract
+## Surface coordinates
 
-The city reconstructs a surface position by intersecting the orthographic pixel ray with the geometric face plane. [`CitySurface.glsl`](../src/shaders/CitySurface.glsl) derives position and pixel footprint from the same map. Mixing raster-interpolated coordinates with unrelated analytical derivatives previously caused view-dependent inconsistencies.
+[`CitySurface.glsl`](../src/shaders/CitySurface.glsl) intersects each orthographic pixel ray with the geometric face plane. It derives position and pixel footprint from the same map. Mixing interpolated positions with unrelated analytical derivatives previously caused view-dependent errors.
 
-Coordinate axes are stable in world space. Camera motion changes projection and pixel footprint; light motion changes ink demand. Neither changes the surface chart basis. The present prototype does not solve rest-space attachment on deforming objects.
+The chart axes stay fixed in world space. Camera motion changes their projection; light motion changes ink demand. Moving and deforming objects still need rest-space attachment.
 
-## Lighting contract
+## Lighting and shadows
 
-[`CityLighting.glsl`](../src/shaders/CityLighting.glsl) separates direct visibility from artistic tone. `lightDirection` points **from the surface toward the sun**.
+[`CityLighting.glsl`](../src/shaders/CityLighting.glsl) separates direct visibility from pencil tone. `lightDirection` points from the surface toward the sun.
 
-| View | Meaning |
+| View | Output |
 |---|---|
 | Light only | Unshadowed `max(dot(normal, light), 0)` |
-| Raw shadows | White for visible direct sun; black for an occluder or a reverse-facing surface |
-| Pencil drawing | Art-directed form and cast-shadow demand passed to the pencil kernel |
+| Raw shadows | White for visible direct sun; black for an occluder or reverse-facing surface |
+| Pencil drawing | Form and cast-shadow tone rendered as pencil |
 
-Raw shadows is therefore a direct-sun visibility diagnostic, not a display of the stored depth texture. Both diagnostic views bypass paper, hatching, outlines and material color.
+The two diagnostic views omit paper grain, hatching, outlines and material color. Raw shadows displays visibility, rather than the stored depth texture.
 
-The shadow pass uses conventional depth writes, a 1536² float32 map, hardware `LEQUAL` comparisons and a fixed nine-tap weighted filter. Receiver depth is evaluated on the geometric plane at each actual texel center. Samples outside the light's XY or depth range contribute clear visibility; they do not stretch edge texels. The depth tolerance is camera-independent.
+The shadow pass uses conventional depth writes into a 1536² float32 map, hardware `LEQUAL` comparisons and nine weighted filter taps. Each comparison evaluates the receiving surface's plane at the actual texel center. Taps outside the light volume count as clear. The bias is independent of the camera.
 
-The large ground and flat decorative markings only receive shadows. Solid buildings, roofs, steps, awnings, benches and cars cast them. This distinction belongs in scene/material metadata, not in the pencil kernel. The tiny grazing-angle attenuation belongs only to artistic cast-shadow ink, keeping raw visibility interpretable.
+Ground and flat decorative markings only receive shadows. Solid geometry casts them. A narrow grazing-angle attenuation applies to pencil tone only. Ordinary turning faces request at most 0.38 ink; cast shadows reach 0.86, or 0.87 on the ground. These values are art direction.
 
-The city intentionally gives unoccluded turning faces lighter ink demand (up to 0.38) than cast shadows (up to 0.86; ground 0.87). Those values are art direction, not a physically based light model.
+## Held drawings
 
-## Time contract
-
-| Change | Recompute image | New stroke variation seed |
+| Change | Image update | New stroke seed |
 |---|---|---|
-| Zoom / study | At the next drawing tick | Yes |
-| Orbit / light | At the next drawing tick | No |
-| Traffic | Quantized scene time, next drawing tick | No |
-| Style controls | At the next drawing tick | No |
-| Idle | No | No |
+| Zoom or scene | Next drawing tick | Yes |
+| Orbit or light | Next drawing tick | No |
+| Traffic | Next tick, using quantized scene time | No |
+| Style controls | Next drawing tick | No |
+| Idle | None | No |
 
-With **Hold drawings** enabled, commits are spaced by at least 100 ms. A slow device may update less often. The last complete image remains visible between commits, with no blend, easing or temporal accumulation. Disable Hold for a continuous diagnostic with a fixed seed.
+Hold drawings spaces updates by at least 100 ms. Slower devices may take longer. Between updates, the canvas keeps the last complete image. Disable Hold for continuous inspection with a fixed seed.
 
-The browser retains its canvas contents. A Unity pipeline should retain an explicit completed drawing texture and blit it between ticks. Do not update shadows, transforms or camera matrices halfway through a drawing. UI can update at display rate outside the held scene layer.
+A Unity port should keep the completed drawing in a persistent texture and display it between ticks. Capture transforms, camera and lights together. UI can remain at display rate outside the held scene image.
 
-## Work and cache ownership
+## Caching and sampling
 
-| Stage | Invalidated by |
+| Cached result | Rebuild when |
 |---|---|
-| Shadow map | Light or caster motion |
-| Depth/normal metadata and fitted contours | Camera, viewport or geometry motion |
-| Pencil shading | Held scene, ink demand or sampling changes |
-| Pencil contour appearance | Drawing seed, jitter or outline style |
+| Shadow map | Light or casters move |
+| Depth/normal data and line fits | Camera, viewport or geometry changes |
+| Pencil shading | Scene, tone or sampling changes |
+| Outline appearance | Seed, jitter or style changes |
 
-The renderer keeps a camera depth prepass, normal-specific chart variants and a conservative scissor around shadowed ground. The ground uses identical triangles in its depth and color passes. Rebuilding it as a different clipped mesh previously broke equal-depth testing.
+A depth prepass rejects hidden pencil work. Chart-specific shader variants omit unused charts. Ground shading uses a conservative screen scissor around possible shadows, while retaining the same triangles as the depth pass. Retriangulating that ground previously broke equal-depth testing.
 
-Fast mode uses two pencil evaluations per native pixel and available MSAA coverage. Reference uses 2× shading resolution and resolves four samples. Outline metadata stays at 2× independently. No runtime CPU readback is part of rendering; tests use readbacks for evidence.
+Fast mode uses two pencil evaluations per output pixel and available MSAA coverage. Reference shades at 2× width and height, then resolves four samples. Outline data stays at 2× in either mode. Only tests read pixels back to the CPU.
 
-Keep future optimization claims tied to the complete frame, including shadow updates, metadata, fitting, mipmaps and composition. Browser software-GPU timing is not a mobile hardware benchmark.
+Performance measurements should include the whole frame: shadows, shading, edge detection, fitting and composition. Software-GPU timing does not predict phone performance.

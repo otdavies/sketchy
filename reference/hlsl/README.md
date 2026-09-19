@@ -1,9 +1,11 @@
-# HLSL reference kernels
+# HLSL kernels
 
-These translations preserve the algorithm interfaces for a future Unity port. They are **not a Unity package** and have not been compiled in Unity. The tested runtime is GLSL/WebGL2.
+These files translate the shader functions for a future Unity port. They have not been compiled in Unity. The tested demo uses GLSL/WebGL2.
 
-- `PencilHatching.hlsl`: finite nested pencil strokes; caller provides a consistent position, normal, pixel derivatives, ink demand and drawing seed.
-- `FractalHatching.hlsl`: analytic nested-stripe comparison.
-- `PencilOutline.hlsl`: compile with `OUTLINE_FIT_PASS` for fitting, without it for composition. Requires `edgeSeeds`, `edgeLinearSampler`, native `resolution`, and hash/noise helpers from `PencilHatching.hlsl`.
+| File | Use |
+|---|---|
+| `PencilHatching.hlsl` | Finite nested pencil strokes. Takes position, normal, pixel derivatives, ink demand and drawing seed. |
+| `FractalHatching.hlsl` | Analytic nested-stripe comparison. |
+| `PencilOutline.hlsl` | Line fitting with `OUTLINE_FIT_PASS`; composition without it. Requires `edgeSeeds`, `edgeLinearSampler`, output `resolution` and the pencil hash/noise helpers. |
 
-Depth/normal seed detection, engine lighting, material setup, resource management and the held output texture still need integration. Start with [the Unity design](../../docs/unity-srp.md). The old built-in-pipeline demonstration components are deliberately excluded so they cannot be mistaken for an SRP drop-in.
+The port still needs edge detection, engine lighting, materials, buffer management and a held output texture. See the [Unity plan](../../docs/unity-srp.md).
