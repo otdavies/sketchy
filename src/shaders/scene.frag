@@ -7,9 +7,6 @@ uniform float lightAngle;
 uniform float spacing;
 uniform float frameSeed;
 uniform vec2 orbit;
-uniform vec2 heldOrbit;
-uniform float heldZoom;
-uniform float heldLight;
 uniform vec2 pan;
 uniform int scene;
 uniform int method;
@@ -19,6 +16,7 @@ uniform vec3 pen;
 
 // Shared pencil and engraving kernels, inserted by the build.
 // CORE_INSERT
+#include "SurfaceLighting.glsl"
 
 vec3 targetAtZoom(float zoom) {
     return mix(vec3(-0.12, -0.12, 0.0), vec3(0.5, -0.46, 0.1), smoothstep(0.0, 1.5, zoom));
@@ -87,18 +85,18 @@ float renderHatch(vec2 phases, float ink, vec2 stateFirst, vec2 stateSecond) {
         comparisonFamily(phases.y, crossCoverage, vec2(phaseDx.y, phaseDy.y), stateSecond);
     return primaryInk + crossInk - primaryInk * crossInk;
 }
-// Phase gradient in the HELD camera's pixel coordinates at this surface point.
+// Phase gradient in the current camera's pixel coordinates at this surface point.
 // Its local tangent-plane Jacobian is independent of current camera motion.
-vec2 heldGradient(vec3 position, vec3 surfaceNormal, vec3 phaseGradient) {
-    vec3 target = targetAtZoom(heldZoom);
-    vec3 cameraOrigin = target + 5.0 * vec3(sin(heldOrbit.x) * cos(heldOrbit.y), sin(heldOrbit.y),
-                                            cos(heldOrbit.x) * cos(heldOrbit.y));
+vec2 pixelGradient(vec3 position, vec3 surfaceNormal, vec3 phaseGradient) {
+    vec3 target = targetAtZoom(zoomStops);
+    vec3 cameraOrigin = target + 5.0 * vec3(sin(orbit.x) * cos(orbit.y), sin(orbit.y),
+                                            cos(orbit.x) * cos(orbit.y));
     vec3 cameraForward = normalize(target - cameraOrigin);
     vec3 cameraRight = normalize(cross(cameraForward, vec3(0, 1, 0)));
     vec3 cameraUp = cross(cameraRight, cameraForward);
     vec3 cameraToPoint = position - cameraOrigin;
     float viewDepth = max(dot(cameraToPoint, cameraForward), 0.001);
-    float pixelsPerUnit = resolution.y * 1.75 * exp2(heldZoom) / viewDepth;
+    float pixelsPerUnit = resolution.y * 1.75 * exp2(zoomStops) / viewDepth;
     vec3 screenGradientX =
         pixelsPerUnit * (cameraRight - cameraForward * dot(cameraToPoint, cameraRight) / viewDepth);
     vec3 screenGradientY =
@@ -130,13 +128,13 @@ void main() {
             secondPhaseGradient.x += 0.035 * 3.1 * cos(3.1 * surfacePosition.x);
         }
         float tone = scene == 2 ? clamp(gl_FragCoord.x / resolution.x, 0.0, 1.0)
-                                : clamp(heldLight, 0.0, 1.0);
-        float heldStep = 4.0 / (resolution.y * exp2(heldZoom));
+                                : clamp(lightAngle, 0.0, 1.0);
+        float pixelStep = 4.0 / (resolution.y * exp2(zoomStops));
         coverage = method == 0 ? pnPencil(vec3(surfacePosition, 0), vec3(0, 0, 1),
                                           vec3(dFdx(surfacePosition), 0),
                                           vec3(dFdy(surfacePosition), 0), tone, frameSeed)
-                               : renderHatch(phases, tone, firstPhaseGradient * heldStep,
-                                             secondPhaseGradient * heldStep);
+                               : renderHatch(phases, tone, firstPhaseGradient * pixelStep,
+                                             secondPhaseGradient * pixelStep);
     } else {
         // Raymarch the sculpture, then evaluate its surface-attached hatching.
         float yaw = orbit.x;
@@ -162,17 +160,12 @@ void main() {
         bool hit = rayDistance < 20.0;
         vec3 surfacePosition = cameraOrigin + rayDirection * min(rayDistance, 20.0);
         vec3 surfaceNormal = normalAt(surfacePosition);
-        float lightRadians = heldLight * 6.283185;
+        float lightRadians = lightAngle * 6.283185;
         vec3 lightDirection =
             normalize(vec3(cos(lightRadians) * 0.8, 0.85, sin(lightRadians) * 0.8));
         float visibility = shadowAt(surfacePosition + surfaceNormal * 0.004, lightDirection);
-        float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));
-        float shadow = max(formShadow, 1.0 - visibility);
-        float tone = 0.95 * pow(shadow, 1.12);
-        if (materialId > 3.5) {
-            tone = 0.93 * (1.0 - visibility) *
-                   (1.0 - smoothstep(2.0, 4.0, length(surfacePosition.xz)));
-        }
+        float illumination = max(dot(surfaceNormal, lightDirection), 0.0) * visibility;
+        float tone = pencilSurfaceTone(illumination, 0.0);
         vec2 phases = vec2(dot(surfacePosition, vec3(0.75, 1.0, 0.25)),
                            dot(surfacePosition, vec3(-0.65, 0.65, 0.80)));
         vec3 firstPhaseGradient = vec3(0.75, 1.0, 0.25);
@@ -197,8 +190,8 @@ void main() {
                 ? pnPencil(surfacePosition, surfaceNormal, dFdx(surfacePosition),
                            dFdy(surfacePosition), tone, frameSeed)
                 : renderHatch(phases, tone,
-                              heldGradient(surfacePosition, surfaceNormal, firstPhaseGradient),
-                              heldGradient(surfacePosition, surfaceNormal, secondPhaseGradient));
+                              pixelGradient(surfacePosition, surfaceNormal, firstPhaseGradient),
+                              pixelGradient(surfacePosition, surfaceNormal, secondPhaseGradient));
         float viewFacing = abs(dot(surfaceNormal, -rayDirection));
         float silhouetteInk = 1.0 - smoothstep(0.035, 0.095, viewFacing);
         if (materialId < 3.5) {
@@ -207,9 +200,6 @@ void main() {
         }
         if (!hit) {
             coverage = 0.0;
-        }
-        if (materialId > 3.5) {
-            coverage *= 1.0 - smoothstep(7.0, 15.0, length(surfacePosition.xz));
         }
     }
 

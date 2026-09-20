@@ -1,4 +1,4 @@
-// First-person integration: real inputs, collision, held ink and perspective rays.
+// First-person integration: real inputs, collision, stable ink and perspective rays.
 const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -19,7 +19,7 @@ const { pathToFileURL } = require('node:url');
     await page.clock.pauseAt(new Date('2026-01-01T01:00:00Z'));
     await page.locator('[data-control=traffic]').uncheck();
     await page.clock.runFor(120);
-    const state = () => page.evaluate(() => document.getElementById('fractal-hatching').fractalDemo.getHeld());
+    const state = () => page.evaluate(() => document.getElementById('fractal-hatching').fractalDemo.getState());
     const seed = () => page.evaluate(() => document.getElementById('fractal-hatching').fractalDemo.getFrameSeed());
     const initial = await state();
     assert.equal(initial.scene, 5);
@@ -99,10 +99,8 @@ const { pathToFileURL } = require('node:url');
     await page.clock.runFor(120);
     assert.equal((await state()).scene, 5);
     assert.deepEqual((await state()).walkPose, initial.walkPose);
-    const ticks = await page.evaluate(() => document.getElementById('fractal-hatching').fractalDemo.tickTimes);
-    assert(ticks.slice(1).every((t, i) => t - ticks[i] >= 99.9), 'complete walking frames remain held at 10 Hz');
     assert.equal(await page.evaluate(() => document.getElementById('fractal-hatching').fractalDemo.gl.getError()), 0);
     assert.deepEqual(errors, []);
-    console.log('Walking: collision, keyboard, mouse capture, drag look, movement buttons, focus loss, seed stability, held frames and mobile layout passed.');
+    console.log('Walking: collision, keyboard, mouse capture, drag look, movement buttons, focus loss, seed stability and mobile layout passed.');
   } finally { await browser.close(); }
 })().catch(e => { console.error(e); process.exit(1); });

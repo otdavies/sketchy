@@ -19,7 +19,6 @@ const { createHash } = require('node:crypto');
       const images = await page.evaluate(() => {
         const root = document.getElementById('fractal-hatching'), demo = root.fractalDemo;
         const control = name => root.querySelector(`[data-control=${name}]`);
-        control('hold').checked = false;
         control('traffic').checked = false;
         const images = [];
         function capture(name) { images.push([name, demo.gl.canvas.toDataURL()]); }
@@ -31,7 +30,7 @@ const { createHash } = require('node:crypto');
           capture(`scene-${scene}-method-${method}`);
         }
         const renderer = demo.cityRenderer;
-        const base = { ...demo.getHeld(), scene: 4, method: 0, trafficTime: 1.7 };
+        const base = { ...demo.getState(), scene: 4, method: 0, trafficTime: 1.7 };
         for (const quality of [0, 1]) for (const outline of [0, 1, 2, 3]) {
           renderer.draw({ ...base, quality, outline }, demo.gl.canvas.width, demo.gl.canvas.height, 7);
           capture(`orbit-quality-${quality}-outline-${outline}`);

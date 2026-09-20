@@ -1,4 +1,4 @@
-// Ground-level camera and input only. Rendering remains on the held drawing clock.
+// Ground-level camera and input. Movement requests an immediate animation-frame redraw.
 function createPencilWalk(canvas, panel, changed) {
   const obstacles = [];
   buildPencilCityGeometry(true, false, obstacles);

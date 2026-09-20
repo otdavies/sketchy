@@ -70,23 +70,6 @@ function createPencilCity(
       0, 0, (far + near) / (near - far), -1,
       0, 0, 2 * far * near / (near - far), 0];
   }
-  // Clip the ground shadow rectangle before perspective division. Corners
-  // behind the walking camera must not invert or erase its screen bounds.
-  function groundScreenBounds(vp, bounds, near) {
-    const [x0, z0, x1, z1] = bounds;
-    const polygon = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([x, z]) =>
-      [0, 1, 3].map(i => vp[i] * x - vp[4 + i] * .01 + vp[8 + i] * z + vp[12 + i]));
-    const clipped = [];
-    for (let i = 0; i < polygon.length; i++) {
-      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
-      if (a[2] >= near) clipped.push(a);
-      if ((a[2] >= near) !== (b[2] >= near)) {
-        const t = (near - a[2]) / (b[2] - a[2]);
-        clipped.push(a.map((v, j) => v + t * (b[j] - v)));
-      }
-    }
-    return clipped.map(p => [p[0] / p[2] * .5 + .5, p[1] / p[2] * .5 + .5]);
-  }
   function mul(a, b) {
     let c = Array(16).fill(0);
     for (let j = 0; j < 4; j++)
@@ -146,7 +129,7 @@ function createPencilCity(
     [2, 1, 6],
   ]);
   const grouped = {};
-  for (let i = 42; i < vertices.length; i += 21) {
+  for (let i = 0; i < vertices.length; i += 21) {
     const mask =
       vertices[i + 6] >= 16
         ? 7
@@ -167,7 +150,6 @@ function createPencilCity(
         [2, 1, 6],
       ]),
     }));
-  let groundBounds = null;
   // Shader text comes from src/shaders/. build.py resolves its includes once;
   // the caller supplies the pencil kernel used by both the demo and fixtures.
   const withPencil = source => source.replace("// PENCIL_CORE_INSERT", pencilCore);
@@ -175,7 +157,6 @@ function createPencilCity(
   const depth = program(vertex, CITY_SHADERS.depth);
   const shadowDepth = program(CITY_SHADERS.shadowVertex, CITY_SHADERS.depth);
   const fillSource = withPencil(CITY_SHADERS.fill);
-  const paperProgram = program(vertex, withPencil(CITY_SHADERS.paper));
   const rawProgram = program(vertex, CITY_SHADERS.raw);
   const metadataProgram = program(vertex, CITY_SHADERS.metadata);
   const fullscreen = CITY_SHADERS.fullscreen;
@@ -230,7 +211,6 @@ function createPencilCity(
     batch.uniforms = locations(batch.program);
   }
   const ru = locations(rawProgram),
-    gu = locations(paperProgram),
     mu = locations(metadataProgram),
     du = locations(depth),
     su = locations(shadowDepth),
@@ -276,8 +256,7 @@ function createPencilCity(
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   let buffers = null,
     lastPost = null,
-    lastLight = null,
-    lastGroundLight = null;
+    lastLight = null;
   const colorSamples = Array.from(
     gl.getInternalformatParameter(gl.RENDERBUFFER, gl.RGBA8, gl.SAMPLES),
   );
@@ -512,36 +491,6 @@ function createPencilCity(
       lightView,
     );
     const trafficTime = extended ? state.trafficTime || 0 : 0;
-    if (lastGroundLight !== state.light) {
-      lastGroundLight = state.light;
-      let minX = Infinity,
-        maxX = -Infinity,
-        minZ = Infinity,
-        maxZ = -Infinity;
-      // Project every caster vertex onto the ground. Outside this conservative
-      // rectangle (+ filter margin) ground is provably unshadowed paper.
-      for (let i = 42; i < vertices.length; i += 7) {
-        if (vertices[i + 6] >= 16) continue;
-        let h = vertices[i + 1] + 0.01,
-          x = vertices[i] - (h * light[0]) / light[1],
-          z = vertices[i + 2] - (h * light[2]) / light[1];
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minZ = Math.min(minZ, z);
-        maxZ = Math.max(maxZ, z);
-      }
-      if (extended) {
-        minX = Math.min(minX, -4.85 - (0.5 * light[0]) / light[1]);
-        maxX = Math.max(maxX, 4.85 - (0.5 * light[0]) / light[1]);
-        minZ = Math.min(minZ, -4.25 - (0.5 * light[2]) / light[1]);
-        maxZ = Math.max(maxZ, 4.25 - (0.5 * light[2]) / light[1]);
-      }
-      minX -= 0.06;
-      maxX += 0.06;
-      minZ -= 0.06;
-      maxZ += 0.06;
-      groundBounds = [minX, minZ, maxX, maxZ];
-    }
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     gl.depthMask(true);
@@ -649,60 +598,7 @@ function createPencilCity(
       bindTexture(shadowTexture, 0, ru.shadowMap);
       gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 7);
     } else {
-      stats.lastPass = "unshadowed ground";
-      gl.useProgram(paperProgram);
-      gl.uniformMatrix4fv(gu.viewProjection, false, vp);
-      gl.uniform1f(gu.sampleScale, scaleFactor);
-      gl.bindVertexArray(mesh);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      const groundShader = batches.find((b) => b.kind === "2");
-      for (const batch of [
-        ...batches,
-        { ...groundShader, mesh, count: 6, isGround: true },
-      ]) {
-        if (batch.isGround) {
-          // Clip pixels, not the plane mesh. Re-triangulating the ground changed
-          // rasterized depth as the camera rotated, making whole shadows vanish.
-          const coords = groundScreenBounds(vp, groundBounds, walking ? .03 : .1);
-          if (!coords.length) continue;
-          const sw = w * scaleFactor,
-            sh = h * scaleFactor;
-          const left = Math.max(
-              0,
-              Math.min(
-                sw,
-                Math.floor(Math.min(...coords.map((p) => p[0])) * sw) - 2,
-              ),
-            ),
-            right = Math.max(
-              0,
-              Math.min(
-                sw,
-                Math.ceil(Math.max(...coords.map((p) => p[0])) * sw) + 2,
-              ),
-            );
-          const bottom = Math.max(
-              0,
-              Math.min(
-                sh,
-                Math.floor(Math.min(...coords.map((p) => p[1])) * sh) - 2,
-              ),
-            ),
-            top = Math.max(
-              0,
-              Math.min(
-                sh,
-                Math.ceil(Math.max(...coords.map((p) => p[1])) * sh) + 2,
-              ),
-            );
-          gl.enable(gl.SCISSOR_TEST);
-          gl.scissor(
-            left,
-            bottom,
-            Math.max(0, right - left),
-            Math.max(0, top - bottom),
-          );
-        }
+      for (const batch of batches) {
         const fu = batch.uniforms;
         stats.lastPass = "pencil " + batch.kind;
         gl.useProgram(batch.program);
@@ -731,7 +627,6 @@ function createPencilCity(
         gl.uniform1i(fu.method, state.method);
         bindTexture(shadowTexture, 0, fu.shadowMap);
         gl.drawArrays(gl.TRIANGLES, 0, batch.count);
-        if (batch.isGround) gl.disable(gl.SCISSOR_TEST);
       }
     }
     gl.depthMask(true);

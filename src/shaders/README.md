@@ -37,15 +37,16 @@ An edge descriptor packs a local pixel offset into RG, an unoriented normal angl
 | [CityTraffic.glsl](CityTraffic.glsl) | Places each vehicle along its route |
 | [city.vert](city.vert), [city-shadow.vert](city-shadow.vert) | Transform scene geometry for the camera or shadow map |
 | [city-fill.frag](city-fill.frag) | Combines lighting, hatching and paper |
-| [city-paper.frag](city-paper.frag), [city-raw.frag](city-raw.frag) | Render paper-only and shadow diagnostic views |
+| [city-raw.frag](city-raw.frag) | Renders light and shadow diagnostic views |
+| [SurfaceLighting.glsl](SurfaceLighting.glsl) | Shared city/sculpture illumination-to-ink mapping |
 | [city-metadata.frag](city-metadata.frag) | Writes normals and material IDs for edge detection |
 | [fullscreen.vert](fullscreen.vert), [depth-only.frag](depth-only.frag) | Small shared entry points for screen and depth passes |
 | [scene.frag](scene.frag) | Runs the flat-chart and ray-marched sculpture studies |
 
-`lightDirection` points from the surface **toward the sun**. Shadow visibility and artistic tone are separate: a reverse face receives no direct sun, but need not be shaded as dark as a cast shadow.
+`lightDirection` points from the surface **toward the sun**. Incoming light is the clamped normal/light dot product multiplied by visibility. Reverse faces and cast shadows both reach the unlit ink level, including ground.
 
 ## Editing and assembly
 
 Edit these source files, then run `python scripts/build.py`. The build resolves quoted `#include` lines and embeds the results in the self-contained demo. The renderer inserts the pencil core at `PENCIL_CORE_INSERT` and selects chart and outline variants with compile-time defines. Shader source no longer lives inside JavaScript templates.
 
-The matching [HLSL references](../../reference/hlsl/) use the same descriptive names. They are porting references, not a tested Unity integration. [Formatting rules](../../.clang-format) keep one statement per line and expand control flow. See [validation](../../docs/validation.md) for the before/after render comparison and regression tests.
+The matching [HLSL references](../../reference/hlsl/) use the same descriptive names. The [Unity package](../../Packages/com.otdavies.sketchy/README.md) compiles the pencil kernel and a synchronized outline adapter. [Formatting rules](../../.clang-format) keep one statement per line and expand control flow. See [validation](../../docs/validation.md) for the before/after render comparison and regression tests.

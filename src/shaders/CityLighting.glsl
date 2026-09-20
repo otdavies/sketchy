@@ -15,8 +15,8 @@ vec2 cityPlaneSlope(vec3 surfaceNormal) {
 }
 
 float cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {
-    // Opaque back-facing surfaces receive no direct sun. This is visibility, not
-    // the artistic form-tone term; raw mode must not paint these faces white.
+    // Opaque back-facing surfaces receive no direct sun. Raw visibility
+    // and surface illumination must both remain dark on these faces.
     float lightFacing = dot(surfaceNormal, lightDirection);
     if (lightFacing <= 0.0) {
         return 0.0;
@@ -72,21 +72,12 @@ float cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {
     return 1.0 - (occlusion > 0.999999 ? 1.0 : clamp(occlusion, 0.0, 1.0));
 }
 
-// Indirect illumination keeps ordinary turning faces lighter than cast shadows.
-// This controls ink demand, not stroke placement or the paper/graphite colors.
+#include "SurfaceLighting.glsl"
+
 float cityPencilTone(vec3 surfaceNormal, float sunVisibility, float material) {
-    float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));
-    // Keep unlit form shading separate from additional cast-shadow ink. Direct
-    // visibility is zero on reverse faces, but they need not become black pencil.
-    float castShadow =
-        (1.0 - sunVisibility) * smoothstep(0.01, 0.03, dot(surfaceNormal, lightDirection));
-    // Material categories: 0/1 = walls and roofs, 2 = dark facade details,
-    // 3/4 = ground, paving and roads. Constants below are the existing art direction.
-    if (material > 2.5) {
-        return 0.87 * castShadow;
-    }
-    if (material > 1.5) {
-        return 0.70 + 0.22 * max(formShadow, castShadow);
-    }
-    return max(0.38 * pow(formShadow, 1.12), 0.86 * pow(castShadow, 1.12));
+    float illumination = max(dot(normalize(surfaceNormal), lightDirection), 0.0) * sunVisibility;
+    // Dark facade details retain their material ink; walls, roofs and ground
+    // share the same surface illumination. Material IDs are not lighting modes.
+    float materialInk = material > 1.5 && material < 2.5 ? 0.70 : 0.0;
+    return pencilSurfaceTone(illumination, materialInk);
 }

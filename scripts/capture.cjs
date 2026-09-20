@@ -27,7 +27,6 @@ const { pathToFileURL } = require("node:url");
         const root = document.getElementById("fractal-hatching"),
           demo = root.fractalDemo;
         const c = (key) => root.querySelector("[data-control=" + key + "]");
-        c("hold").checked = false;
         c("traffic").checked = false;
         c("quality").value = 0;
         c("zoom").value =
@@ -36,9 +35,9 @@ const { pathToFileURL } = require("node:url");
           name === "sculpture" ? 0.34 : 0.68,
           name === "sculpture" ? 0.25 : 0.52,
         );
-        if (demo.getHeld().scene >= 3)
+        if (demo.getState().scene >= 3)
           demo.cityRenderer.draw(
-            { ...demo.getHeld(), trafficTime: 0 },
+            { ...demo.getState(), trafficTime: 0 },
             demo.gl.canvas.width,
             demo.gl.canvas.height,
             1,

@@ -1,6 +1,6 @@
 # Rendering
 
-The renderer captures one scene state, computes its shadows and strokes, then holds the finished image until the next drawing tick.
+The renderer uses the current camera, scene and light state to compute shadows, strokes and contours on each requested frame. Stroke seeds stay fixed during motion.
 
 ```mermaid
 flowchart TD
@@ -12,7 +12,7 @@ flowchart TD
     Tone --> Hatch[Hatching]
     Fit --> Compose[Paper and outline composition]
     Hatch --> Compose
-    Compose --> Hold[Held image]
+    Compose --> Present[Present current image]
 ```
 
 ## Surface coordinates
@@ -31,27 +31,19 @@ The chart axes stay fixed in world space. Camera motion changes their projection
 |---|---|
 | Light only | Unshadowed `max(dot(normal, light), 0)` |
 | Raw shadows | White for visible direct sun; black for an occluder or reverse-facing surface |
-| Pencil drawing | Form and cast-shadow tone rendered as pencil |
+| Pencil drawing | Surface illumination mapped to pencil tone |
 
 The two diagnostic views omit paper grain, hatching, outlines and material color. Raw shadows displays visibility, rather than the stored depth texture.
 
 The shadow pass uses conventional depth writes into a 1536² float32 map, hardware `LEQUAL` comparisons and nine weighted filter taps. Each comparison evaluates the receiving surface's plane at the actual texel center. Taps outside the light volume count as clear. The bias is independent of the camera.
 
-Ground and flat decorative markings only receive shadows. Solid geometry casts them. A narrow grazing-angle attenuation applies to pencil tone only. Ordinary turning faces request at most 0.38 ink; cast shadows reach 0.86, or 0.87 on the ground. These values are art direction.
+Ground and flat decorative markings receive shadows; solid geometry casts them. City and sculpture use the same surface illumination: `max(dot(normal, light), 0) * visibility`. Darkness is one minus clamped illumination, and requested ink is `darkness * mix(0.38, 0.86, darkness)`, matching Unity's default style. Back-facing and fully occluded surfaces reach 0.86 ink, including ground. Dark facade details add a 0.70 material ink base using the same blend as Unity. Ground has no lighting exemption or distance-based fade to white.
 
-## Held drawings
+The web sun has unit intensity and white light. Unity additionally accumulates multiple lights, supports optional ambient fill, attenuated paper color and stable artistic variation in point/spot falloff.
 
-| Change | Image update | New stroke seed |
-|---|---|---|
-| Zoom or scene | Next drawing tick | Yes |
-| Orbit, walking or light | Next drawing tick | No |
-| Traffic | Next tick, using quantized scene time | No |
-| Style controls | Next drawing tick | No |
-| Idle | None | No |
+## Continuous rendering
 
-Hold drawings spaces updates by at least 100 ms. Slower devices may take longer. Between updates, the canvas keeps the last complete image. Disable Hold for continuous inspection with a fixed seed.
-
-A Unity port should keep the completed drawing in a persistent texture and display it between ticks. Capture transforms, camera and lights together. UI can remain at display rate outside the held scene image.
+Camera movement, zoom, relighting and style edits render on the next animation frame. Traffic uses continuous animation time. Idle web scenes skip unchanged work; there is no drawing-rate limit or delayed redraw timer. Unity renders every camera frame using transient Render Graph textures, without frame history. Stroke seeds do not advance automatically.
 
 ## Caching and sampling
 
@@ -62,7 +54,7 @@ A Unity port should keep the completed drawing in a persistent texture and displ
 | Pencil shading | Scene, tone or sampling changes |
 | Outline appearance | Seed, jitter or style changes |
 
-A depth prepass rejects hidden pencil work. Chart-specific shader variants omit unused charts. Ground shading uses a conservative screen scissor around possible shadows, while retaining the same triangles as the depth pass. The perspective path clips that rectangle against the near plane before dividing by clip-space W. Retriangulating the ground previously broke equal-depth testing.
+A depth prepass rejects hidden pencil work. Chart-specific shader variants omit unused charts. Ground participates in the same shaded batches as other geometry across its full extent, retaining the same triangles as the depth pass. The former plain-paper ground pass and shadow-only scissor are removed because unshadowed ground can still require form shading.
 
 Fast mode uses two pencil evaluations per output pixel and available MSAA coverage. Reference shades at 2× width and height, then resolves four samples. Outline data stays at 2× in either mode. Only tests read pixels back to the CPU.
 
@@ -70,6 +62,6 @@ Performance measurements should include the whole frame: shadows, shading, edge 
 
 ## Walking controls
 
-[`first-person.js`](../src/web/first-person.js) owns keyboard, pointer and touch input. It integrates movement between drawing ticks; the renderer captures the eye and look angles together with the rest of the scene. Walking changes the camera, not the stroke seed.
+[`first-person.js`](../src/web/first-person.js) owns keyboard, pointer and touch input. It integrates movement each animation frame; the renderer uses the current eye and look angles. Walking changes the camera, not the stroke seed.
 
 The camera stays at a fixed eye height. Small movement steps and sliding collision use rectangles collected from the town's static box geometry. Low curbs remain walkable; cars are visual only. Losing focus, hiding the page or leaving the mode clears held input.

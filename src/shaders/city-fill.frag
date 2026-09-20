@@ -72,9 +72,6 @@ void main() {
     float paperFibre = pnNoise(gl_FragCoord.xy / sampleScale * vec2(0.13, 0.87));
     inkCoverage *= mix(clamp(0.80 + 0.27 * paperTooth + 0.13 * paperFibre, 0.0, 1.0), 1.0,
                        pow(inkCoverage, 3.0));
-    if (materialId > 2.5) {
-        inkCoverage *= 1.0 - smoothstep(4.8, 7.8, length(surfacePosition.xz));
-    }
     color = vec4(mix(paperColor, vec3(0.125, 0.119, 0.115), inkCoverage), 1);
     meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);
 }
