@@ -20,7 +20,10 @@ jobs:
           cache: npm
       - run: python scripts/build.py --check
       - run: python tests/invariants.py
+      - run: python tests/unity-package.py
+      - run: python scripts/sync-outline-hlsl.py --check
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm test
+      - run: npm run test:outlines
       - run: npm run test:shadows
