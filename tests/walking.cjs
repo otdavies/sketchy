@@ -52,10 +52,16 @@ const { pathToFileURL } = require('node:url');
     await page.locator('[data-walk-capture]').click();
     await page.clock.runFor(120);
     assert(await page.evaluate(() => document.pointerLockElement === document.querySelector('canvas')));
-    await page.mouse.move(200, 200);
-    await page.mouse.move(250, 210);
+    // Pointer lock consumes relative movement. Headless Chromium can report zero
+    // movementX/Y for Playwright's absolute mouse positions while locked. Keep
+    // real capture/release, but provide a known relative event to test mouse-look.
+    await page.evaluate(() => document.dispatchEvent(new MouseEvent('mousemove', {
+      movementX: 50, movementY: 10, bubbles: true,
+    })));
     await page.clock.runFor(120);
-    assert.notEqual((await state()).walkPose.yaw, 0);
+    const capturedLook = (await state()).walkPose;
+    assert(Math.abs(capturedLook.yaw - 50 * .0035) < 1e-9);
+    assert(Math.abs(capturedLook.pitch - (initial.walkPose.pitch - 10 * .0035)) < 1e-9);
     await page.keyboard.press('Escape');
     await page.clock.runFor(120);
     assert(await page.evaluate(() => document.pointerLockElement === null));
