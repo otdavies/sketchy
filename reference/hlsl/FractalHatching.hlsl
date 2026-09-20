@@ -55,7 +55,7 @@ float FHCross(float2 phase, float inkCoverage, float spacingPixels) {
 }
 
 // Analytic phase gradient in a sampled camera, independent of the live camera.
-// Supply a 10 Hz snapshot of objectToClip and viewport size. surfaceNormal and
+// Supply the current objectToClip and viewport size. surfaceNormal and
 // phaseGradient are in object coordinates; the normal need not be normalized.
 float2 FHReferenceGradient(float3 surfacePosition, float3 surfaceNormal, float3 phaseGradient,
                            float4x4 objectToClip, float2 viewport) {
