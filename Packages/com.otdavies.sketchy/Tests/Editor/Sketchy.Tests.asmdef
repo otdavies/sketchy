@@ -1,0 +1,7 @@
+{
+  "name": "Sketchy.Tests",
+  "references": ["Sketchy.Runtime", "Sketchy.Editor", "Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime", "Unity.ugui"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"],
+  "autoReferenced": false
+}

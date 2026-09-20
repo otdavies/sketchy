@@ -1,0 +1,7 @@
+{
+  "name": "Sketchy.Editor",
+  "rootNamespace": "Sketchy.Editor",
+  "references": ["Sketchy.Runtime", "Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime", "Unity.RenderPipelines.Universal.Editor", "Unity.ugui"],
+  "includePlatforms": ["Editor"],
+  "autoReferenced": true
+}

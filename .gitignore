@@ -3,3 +3,20 @@ __pycache__/
 test-results/
 .DS_Store
 _site/
+
+# Local Unity testbeds stay on this machine; only the UPM package is versioned.
+/Unity/
+# Unity generated state.
+**/[Ll]ibrary/
+**/[Tt]emp/
+**/[Oo]bj/
+**/[Ll]ogs/
+**/[Uu]ser[Ss]ettings/
+**/[Mm]emoryCaptures/
+**/Builds/
+**/TestResults/
+*.csproj
+*.sln
+*.slnx
+.vs/
+artifacts/

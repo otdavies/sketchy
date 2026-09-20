@@ -1,9 +1,9 @@
 {
-  "note": "Approved pencil and engraving kernels. Changes require an intentional appearance review. Readability pass: 32 WebGL views byte-identical to 30c7300e06e4a5daba607f6458a5a93da6912086; HLSL remains an uncompiled reference.",
+  "note": "Approved pencil and engraving kernels. Changes require an intentional appearance review. The FractalHatching HLSL hash update removes only a stale timing comment; shader math is unchanged. PencilHatching HLSL is compiled in Unity 6.3.",
   "sha256": {
     "src/shaders/PencilHatching.glsl": "0c939ecae20fceebe0018a677e988e957773a9b7504280d50e954e3249256a80",
     "reference/hlsl/PencilHatching.hlsl": "ed4ceaea31ed5c7541c62495b669086a3811bf48a620c758be14e1125fbe9c36",
     "src/shaders/FractalHatching.glsl": "c065472f2aa4db06b47da4a87105e1e53e7b9ca0e43619e9f2052f60b517cea9",
-    "reference/hlsl/FractalHatching.hlsl": "3f887f8b07edf09c4c38b3dcd7afcab795465824c895394a0a793fce4469aad7"
+    "reference/hlsl/FractalHatching.hlsl": "463c82470b4cc35880b48bde3938080a26d05b23bfe6dddb58646c36146443cf"
   }
 }

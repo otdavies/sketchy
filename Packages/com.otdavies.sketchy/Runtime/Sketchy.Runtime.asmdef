@@ -1,0 +1,6 @@
+{
+  "name": "Sketchy.Runtime",
+  "rootNamespace": "Sketchy",
+  "references": ["Unity.RenderPipelines.Core.Runtime", "Unity.RenderPipelines.Universal.Runtime"],
+  "autoReferenced": true
+}
