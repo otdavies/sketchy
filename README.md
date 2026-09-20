@@ -12,7 +12,7 @@ The hatching builds on [Rune Skovbo Johansen's fractal dithering](https://runevi
 
 The outlines use depth and normal samples to find edges, then fit a short line through nearby samples. Width and wiggle are measured in pixels. This follows the screen-space approach described in [Manifold Garden's rendering retrospective](https://history.siggraph.org/wp-content/uploads/2022/08/2020-Talks-Brussee_Thats-a-wrap_-Manifold-Garden-rendering-retrospective.pdf), with a local line fit and pencil shading added here.
 
-With **Hold drawings** on, the whole image updates at most ten times a second. Zooming gives each drawing small stroke variations. There is no blending between frames.
+Camera, light and scene changes render continuously. Stroke seeds stay fixed during motion and zoom; there is no temporal blending.
 
 ## Controls
 
@@ -28,6 +28,16 @@ With **Hold drawings** on, the whole image updates at most ten times a second. Z
 
 Start with the [shader reading guide](src/shaders/README.md) for the call order, coordinate spaces and render passes. Shaders are in `src/shaders/`; the scene and WebGL code are in `src/web/`. Run `python scripts/build.py` after editing them. The generated demo also works offline. See [tests and build instructions](docs/validation.md).
 
-The next goal is a Unity paper drawing pipeline. [The porting plan](docs/unity-srp.md) records the required passes and unresolved work. The HLSL translations are included as references, but there is no Unity package yet.
+## Unity 6.3 / URP
 
-MIT license. The [tests](https://github.com/otdavies/sketchy/actions/workflows/checks.yml) check stroke identity, held frames and shadow visibility.
+The [Unity package](Packages/com.otdavies.sketchy/README.md) includes pencil materials, fitted contours, a paper UI shader and a reversible setup window. Install it into a **Unity 6000.3.12f1 / URP 17.3** project, then use **Tools > Sketchy > Installer**. Local testbeds under `Unity/` are excluded from Git; only the UPM package is shared. The reference scene uses the same city geometry as the browser.
+
+To install from this repository, use Package Manager's **Install package from git URL**:
+
+```text
+https://github.com/otdavies/sketchy.git?path=/Packages/com.otdavies.sketchy
+```
+
+This first Unity release targets URP 17.3, opaque rigid meshes and independent mono cameras. [Setup, architecture and validation](docs/unity-srp.md) describe the current scope and remaining parity work.
+
+MIT license. The [tests](https://github.com/otdavies/sketchy/actions/workflows/checks.yml) check stroke identity, immediate updates, contour spikes and shadow visibility.

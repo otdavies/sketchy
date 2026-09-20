@@ -1,6 +1,6 @@
 # HLSL kernels
 
-These files translate the shader functions for a future Unity port. They have not been compiled in Unity. The tested demo uses GLSL/WebGL2.
+These files preserve the engine-independent shader translations. The [Unity package](../../Packages/com.otdavies.sketchy/) compiles an unchanged copy of the pencil kernel and an adapted outline kernel in Unity 6.3. The browser continues to use GLSL/WebGL2.
 
 | File | Use |
 |---|---|
@@ -8,4 +8,4 @@ These files translate the shader functions for a future Unity port. They have no
 | `FractalHatching.hlsl` | Analytic nested-stripe comparison. |
 | `PencilOutline.hlsl` | Line fitting with `OUTLINE_FIT_PASS`; composition without it. Requires `edgeSeeds`, `edgeLinearSampler`, output `resolution` and the pencil hash/noise helpers. |
 
-The port still needs edge detection, engine lighting, materials, buffer management and a held output texture. See the [Unity plan](../../docs/unity-srp.md).
+The package supplies lighting, material passes, edge detection, buffer management and continuous rendering. See the [Unity guide](../../docs/unity-srp.md) for validation and support limits. The fractal comparison kernel remains a reference, outside the Unity material.
