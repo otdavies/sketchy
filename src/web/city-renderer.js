@@ -197,6 +197,7 @@ function createPencilCity(
         "trafficTime",
         "shadowPlaneScale",
         "debugView",
+        "hatchBrightnessRange",
       ].map((n) => [n, gl.getUniformLocation(p, n)]),
     );
   for (const batch of batches) {
@@ -604,6 +605,8 @@ function createPencilCity(
         gl.useProgram(batch.program);
         gl.bindVertexArray(batch.mesh);
         gl.uniform1f(fu.trafficTime, trafficTime);
+        gl.uniform2f(fu.hatchBrightnessRange, state.fullHatchBrightness ?? 0,
+          state.hatchStartBrightness ?? 1);
         gl.uniform1f(fu.shadowPlaneScale, (2 * shadowExtent) / 29.9);
         gl.uniform3fv(fu.eye, eye);
         gl.uniform2f(fu.resolution, w, h);

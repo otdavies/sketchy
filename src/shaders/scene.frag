@@ -129,6 +129,7 @@ void main() {
         }
         float tone = scene == 2 ? clamp(gl_FragCoord.x / resolution.x, 0.0, 1.0)
                                 : clamp(lightAngle, 0.0, 1.0);
+        tone = pencilRemapDarkness(tone);
         float pixelStep = 4.0 / (resolution.y * exp2(zoomStops));
         coverage = method == 0 ? pnPencil(vec3(surfacePosition, 0), vec3(0, 0, 1),
                                           vec3(dFdx(surfacePosition), 0),

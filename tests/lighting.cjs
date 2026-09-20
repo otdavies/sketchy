@@ -27,23 +27,28 @@ const { pathToFileURL } = require('node:url');
       const state = { ...demo.getState(), view: 0, outline: 0, trafficTime: 0, zoom: -.3 };
       const samples = [];
       try {
-        for (const light of [[.8,.95,.1], [.8,0,.1], [.8,-.95,.1]]) {
+        for (const light of [[.8,.95,.1], [.8,.5,.1], [.8,0,.1], [.8,-.95,.1], [.2,1,0]]) {
           const factory = createPencilCity.toString();
           const expression = 'light = norm([Math.cos(angle) * 0.8, 0.95, Math.sin(angle) * 0.8]);';
           if (!factory.includes(expression)) throw Error('Missing fixture light override');
           const renderer = eval('(' + factory.replace(expression, `light = norm(${JSON.stringify(light)});`) + ')')
             (gl, ...source, false, ground);
+          for (const [full, start] of [[0,1], [.2,.8], [0,.6], [.8,.9], [.5,.5], [0,0], [1,1]])
           for (const quality of [0,1]) {
-            renderer.draw({ ...state, quality }, gl.canvas.width, gl.canvas.height, 0);
+            renderer.draw({ ...state, quality, fullHatchBrightness: full, hatchStartBrightness: start },
+              gl.canvas.width, gl.canvas.height, 0);
             const width=gl.canvas.width, height=gl.canvas.height;
             const pixels=new Uint8Array(width*height*4);
             gl.readPixels(0,0,width,height,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
             const illumination=Math.max(0,light[1]/Math.hypot(...light));
-            const dark=1-illumination, expected=255*dark*(.38+.48*dark);
+            // Independent brightness-domain reference, including exact endpoints.
+            const dark=start===full ? Number(illumination<start)
+              : Math.max(0,Math.min(1,(start-illumination)/(start-full)));
+            const expected=255*dark*(.38+.48*dark);
             // Samples span the clear ground, away from the city footprint.
             for (const fx of [.15,.35,.5,.65,.85]) {
               const actual=pixels[(Math.floor(height*.4)*width+Math.floor(width*fx))*4];
-              samples.push({ light, quality, expected, actual });
+              samples.push({ light, quality, full, start, expected, actual });
             }
           }
         }

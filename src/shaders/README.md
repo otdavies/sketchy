@@ -43,7 +43,7 @@ An edge descriptor packs a local pixel offset into RG, an unoriented normal angl
 | [fullscreen.vert](fullscreen.vert), [depth-only.frag](depth-only.frag) | Small shared entry points for screen and depth passes |
 | [scene.frag](scene.frag) | Runs the flat-chart and ray-marched sculpture studies |
 
-`lightDirection` points from the surface **toward the sun**. Incoming light is the clamped normal/light dot product multiplied by visibility. Reverse faces and cast shadows both reach the unlit ink level, including ground.
+`lightDirection` points from the surface **toward the sun**. Incoming light is the clamped normal/light dot product multiplied by visibility. Reverse faces and cast shadows both reach the unlit ink level, including ground. `SurfaceLighting.glsl` remaps the selected brightness range before applying the tone curve. `hatchBrightnessRange` packs (full-hatching brightness, clear-paper brightness); its default is `(0, 1)`. This changes ink demand without changing stroke coordinates or shadow visibility.
 
 ## Editing and assembly
 

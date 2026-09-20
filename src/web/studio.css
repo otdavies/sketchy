@@ -30,6 +30,7 @@ header nav { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; }
 .advanced { margin-top: 18px; border-top: 1px solid #334155; padding-top: 14px; }
 summary { cursor: pointer; color: #b6c2d4; font-size: 13px; }
 .advanced .main-controls { margin-top: 18px; }
+.hatch-controls .form-range { margin-top: auto; }
 .advanced p { color: #a9b5c8; font-size: 12px; margin-bottom: 0; }
 footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 0 22px 20px; font-size: 12px; color: #a9b5c8; }
 @media (max-width: 720px) {

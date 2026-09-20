@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Paper Style brightness thresholds control where surface hatching starts and reaches Shadow Ink. Defaults preserve the existing appearance; material ink and shadow outlines remain independent.
+
 ## 0.1.0
 
 - Initial Unity 6.3 / URP 17.3 package and local test project.

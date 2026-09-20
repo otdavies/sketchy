@@ -89,6 +89,7 @@
       "paper",
       "pen",
       "frameSeed",
+      "hatchBrightnessRange",
     ].map((n) => [n, gl.getUniformLocation(program, n)]),
   );
   let yaw = +controls.scene.value >= 3 ? 0.68 : 0.34,
@@ -138,6 +139,8 @@
       jitter: +controls.jitter.value,
       quality: +controls.quality.value,
       view: +controls.view.value,
+      hatchStartBrightness: +controls.hatchStartBrightness.value,
+      fullHatchBrightness: +controls.fullHatchBrightness.value,
       trafficTime: trafficClock,
     };
     const dirty = JSON.stringify(state) !== JSON.stringify(requested);
@@ -179,6 +182,8 @@
         gl.uniform1i(uniforms.method, state.method);
         gl.uniform1i(uniforms.flow, 1);
         gl.uniform1f(uniforms.frameSeed, frameSeed);
+        gl.uniform2f(uniforms.hatchBrightnessRange, state.fullHatchBrightness,
+          state.hatchStartBrightness);
         // Graphite and paper are physical artwork materials, not inverted UI colors.
         gl.uniform3fv(uniforms.paper, [0.984, 0.978, 0.958]);
         gl.uniform3fv(uniforms.pen, [0.125, 0.119, 0.115]);
@@ -192,7 +197,7 @@
     root.querySelector("[data-light-label]").textContent =
       +controls.scene.value === 0 || +controls.scene.value >= 3
         ? "Light direction"
-        : "Ink coverage";
+        : "Input darkness";
     root.querySelector("[data-light-value]").textContent =
       +controls.scene.value === 0 || +controls.scene.value >= 3
         ? Math.round(+controls.light.value * 360) + "°"
@@ -202,6 +207,12 @@
       raw = city && +controls.view.value > 0;
     controls.view.disabled = !city;
     controls.method.disabled = raw;
+    controls.hatchStartBrightness.disabled = raw;
+    controls.fullHatchBrightness.disabled = raw;
+    root.querySelector("[data-hatch-start-value]").textContent =
+      Math.round(state.hatchStartBrightness * 100) + "%";
+    root.querySelector("[data-full-hatch-value]").textContent =
+      Math.round(state.fullHatchBrightness * 100) + "%";
     controls.outline.disabled = !city || raw;
     controls.quality.disabled = !city || raw;
     controls.jitter.disabled = !city || raw || +controls.outline.value !== 2;
@@ -233,7 +244,15 @@
     }
   }
   Object.values(controls).forEach((e) =>
-    e.addEventListener("input", requestDraw),
+    e.addEventListener("input", () => {
+      // Keep the range ordered while letting either slider move its endpoint.
+      if (+controls.fullHatchBrightness.value > +controls.hatchStartBrightness.value) {
+        if (e === controls.fullHatchBrightness)
+          controls.hatchStartBrightness.value = controls.fullHatchBrightness.value;
+        else controls.fullHatchBrightness.value = controls.hatchStartBrightness.value;
+      }
+      requestDraw();
+    }),
   );
   controls.scene.addEventListener("change", () => {
     if (animationStart !== null) play(animationKind);

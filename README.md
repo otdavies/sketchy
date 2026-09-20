@@ -20,6 +20,7 @@ Camera, light and scene changes render continuously. Stroke seeds stay fixed dur
 - **Scene** switches between the city, traffic, sculpture and flat tests.
 - [**Walk through town**](https://otdavies.github.io/sketchy/?study=walk) offers WASD movement and drag-to-look. **Capture mouse** enables mouse-look; Esc releases it. Touch screens have movement buttons.
 - **Pencil fit** adds outline wiggle. **Stable fit** removes it.
+- **Hatching starts below** and **Full hatching below**, in More controls, set the surface-brightness range that produces hatch ink.
 - **More controls** contains the shading comparisons, shadow views and quality settings.
 
 ## Research and source

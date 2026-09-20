@@ -85,9 +85,29 @@ const { pathToFileURL } = require("node:url");
         const raw = read();
         const rawUpdatesShadows =
           renderer.stats.shadowUpdates === shadowCount + 1;
-        commit({ method: 1, outline: 2, jitter: 1.2 });
+        commit({ method: 1, outline: 2, jitter: 1.2, hatchStartBrightness: .6, fullHatchBrightness: .2 });
         const rawIgnoresStyle =
           raw === read() && renderer.stats.fitUpdates === fitCount;
+        const rangeDisabledInRaw = c("hatchStartBrightness").disabled && c("fullHatchBrightness").disabled;
+        commit({ hatchStartBrightness: 1, fullHatchBrightness: 0 });
+
+        // Exercise real input events: changing either endpoint keeps the range ordered.
+        c("hatchStartBrightness").value = ".4";
+        c("hatchStartBrightness").dispatchEvent(new Event("input", { bubbles: true }));
+        c("fullHatchBrightness").value = ".6";
+        c("fullHatchBrightness").dispatchEvent(new Event("input", { bubbles: true }));
+        const startFollowsFull = +c("hatchStartBrightness").value === .6;
+        c("hatchStartBrightness").value = ".3";
+        c("hatchStartBrightness").dispatchEvent(new Event("input", { bubbles: true }));
+        const fullFollowsStart = +c("fullHatchBrightness").value === .3;
+        commit({ scene: 1, view: 0, method: 0, light: .3, hatchStartBrightness: 1, fullHatchBrightness: 0 });
+        const hatchedFlat = read(), thresholdSeed = demo.getFrameSeed();
+        commit({ hatchStartBrightness: .6 }); // The flat input is 70% bright.
+        const clearFlat = read();
+        commit({ light: 0 });
+        const thresholdClearsFlat = clearFlat === read() && clearFlat !== hatchedFlat;
+        const thresholdPreservesSeed = demo.getFrameSeed() === thresholdSeed;
+        commit({ hatchStartBrightness: 1, fullHatchBrightness: 0, light: .8 });
         const studies = [];
         for (const scene of [0, 1, 2, 3, 4]) {
           commit({
@@ -128,6 +148,11 @@ const { pathToFileURL } = require("node:url");
           lightOnlySkipsShadows,
           rawUpdatesShadows,
           rawIgnoresStyle,
+          rangeDisabledInRaw,
+          startFollowsFull,
+          fullFollowsStart,
+          thresholdClearsFlat,
+          thresholdPreservesSeed,
           studies,
           referenceError: gl.getError(),
           initialRendered: initial !== settled && settledSeed === seed,
@@ -144,6 +169,7 @@ const { pathToFileURL } = require("node:url");
       assert.equal(study.error, 0);
     }
     await page.setViewportSize({ width: 360, height: 1100 });
+    await page.locator("details.advanced").evaluate(e => e.open = true);
     await page.waitForTimeout(250);
     assert.equal(
       await page.evaluate(

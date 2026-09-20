@@ -41,6 +41,12 @@ Ground and flat decorative markings receive shadows; solid geometry casts them. 
 
 The web sun has unit intensity and white light. Unity additionally accumulates multiple lights, supports optional ambient fill, attenuated paper color and stable artistic variation in point/spot falloff.
 
+### Hatching brightness range
+
+**Hatching starts below** sets the clear-paper brightness, and **Full hatching below** sets the brightness that reaches Shadow Ink. The range is 0–1 (unlit to fully lit), measured after light/shadow accumulation and ambient fill, before paper tint. With full threshold `low` and start threshold `high`, the normalized darkness is `clamp((high - brightness) / (high - low), 0, 1)`. The shader then applies the existing form/shadow ink curve. Equal endpoints use a hard cutoff: brightness at or above the threshold stays clear. Both endpoints at zero disable lighting-driven hatching.
+
+Defaults `low = 0`, `high = 1` retain the original mapping. Material ink is still added independently. The flat studies apply the range directly to their input darkness, preserving their full 0–1 tone ramp. Raw shadows, Light only, shadow contours and stroke coordinates do not use these thresholds. In Unity, **Ink Demand** displays the resulting tone for tuning.
+
 ## Continuous rendering
 
 Camera movement, zoom, relighting and style edits render on the next animation frame. Traffic uses continuous animation time. Idle web scenes skip unchanged work; there is no drawing-rate limit or delayed redraw timer. Unity renders every camera frame using transient Render Graph textures, without frame history. Stroke seeds do not advance automatically.

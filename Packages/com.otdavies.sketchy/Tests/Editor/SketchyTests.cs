@@ -301,6 +301,80 @@ namespace Sketchy.Tests
             target.Release(); Object.DestroyImmediate(target);
         }
 
+        [UnityTest]
+        public IEnumerator BrightnessThresholdsControlInkWithoutChangingLighting()
+        {
+            SketchySample.Create(false);
+            yield return null;
+            foreach (var renderer in Object.FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None)) renderer.enabled = false;
+            foreach (var light in Object.FindObjectsByType<Light>(FindObjectsSortMode.None)) light.enabled = false;
+            var style = AssetDatabase.LoadAssetAtPath<SketchyStyle>(SketchyInstaller.StylePath);
+            string savedStyle = EditorJsonUtility.ToJson(style);
+            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var material = new Material(Shader.Find("Sketchy/Pencil Lit"));
+            cube.GetComponent<Renderer>().sharedMaterial = material;
+            var camera = Camera.main;
+            camera.orthographicSize = 1;
+            camera.transform.SetPositionAndRotation(new Vector3(0, 0, -5), Quaternion.identity);
+            var target = new RenderTexture(128, 128, 24, RenderTextureFormat.ARGB32);
+            target.Create();
+            try
+            {
+                style.view = SketchyStyle.View.InkDemand;
+                style.formInk = .38f;
+                style.shadowInk = .86f;
+                style.ambientIllumination = .5f; // Known brightness without light/shadow filtering.
+                style.hatchStartBrightness = 1;
+                style.fullHatchBrightness = 0;
+                Assert.That(CenterInk(camera, target), Is.EqualTo(.31f).Within(.015f));
+
+                style.hatchStartBrightness = .4f;
+                Assert.Less(CenterInk(camera, target), .005f, "Faces brighter than the start must be clear.");
+                style.hatchStartBrightness = .8f;
+                style.fullHatchBrightness = .6f;
+                Assert.That(CenterInk(camera, target), Is.EqualTo(.86f).Within(.015f));
+                style.fullHatchBrightness = .2f;
+                Assert.That(CenterInk(camera, target), Is.EqualTo(.31f).Within(.015f), "The remapped midpoint uses the original ink curve.");
+
+                style.hatchStartBrightness = style.fullHatchBrightness = .5f;
+                Assert.Less(CenterInk(camera, target), .005f, "A coincident cutoff stays clear at equality.");
+                style.ambientIllumination = .49f;
+                Assert.That(CenterInk(camera, target), Is.EqualTo(.86f).Within(.015f));
+                style.hatchStartBrightness = style.fullHatchBrightness = 0;
+                style.ambientIllumination = 0;
+                Assert.Less(CenterInk(camera, target), .005f, "Zero thresholds disable lighting-driven ink, without NaNs.");
+                material.SetFloat("_InkBias", .7f);
+                Assert.That(CenterInk(camera, target), Is.EqualTo(.7f).Within(.015f), "Material ink remains an explicit base deposit.");
+                material.SetFloat("_InkBias", 0);
+
+                // Runtime edits bypass OnValidate; shader uploads must still be ordered.
+                style.hatchStartBrightness = .4f;
+                style.fullHatchBrightness = .8f;
+                style.ambientIllumination = .5f;
+                Assert.Less(CenterInk(camera, target), .005f);
+
+                foreach (var view in new[] { SketchyStyle.View.LightOnly, SketchyStyle.View.RawShadows })
+                {
+                    style.view = view;
+                    style.hatchStartBrightness = 1;
+                    style.fullHatchBrightness = 0;
+                    var before = Capture(camera, target);
+                    style.hatchStartBrightness = style.fullHatchBrightness = 0;
+                    var after = Capture(camera, target);
+                    try { Assert.AreEqual(0, Difference(before, after), "Thresholds must not change diagnostic lighting."); }
+                    finally { Object.DestroyImmediate(before); Object.DestroyImmediate(after); }
+                }
+            }
+            finally
+            {
+                EditorJsonUtility.FromJsonOverwrite(savedStyle, style);
+                Object.DestroyImmediate(cube);
+                Object.DestroyImmediate(material);
+                target.Release();
+                Object.DestroyImmediate(target);
+            }
+        }
+
         static float CenterInk(Camera camera,RenderTexture target)
         {
             var image=Capture(camera,target);

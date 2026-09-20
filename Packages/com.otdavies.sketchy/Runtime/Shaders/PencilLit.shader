@@ -22,6 +22,21 @@ Shader "Sketchy/Pencil Lit"
         float4 _SketchyPaper, _SketchyGraphite, _SketchyTone, _SketchyDrawing;
         float _SketchyAmbientIllumination;
         float4 _SketchyLightFalloff;
+        // x = full-hatching brightness, y = clear-paper brightness, in [0, 1].
+        float4 _SketchyHatchBrightness;
+
+        float RemapHatchDarkness(float darkness)
+        {
+            float startDarkness = 1.0 - _SketchyHatchBrightness.y;
+            float fullDarkness = 1.0 - _SketchyHatchBrightness.x;
+            if (fullDarkness <= startDarkness)
+            {
+                // Equal thresholds are a hard cutoff; the cutoff itself stays clear.
+                return darkness > startDarkness ? 1.0 : 0.0;
+            }
+            return saturate((darkness - startDarkness) / (fullDarkness - startDarkness));
+        }
+
         float PunctualFalloffVariation(float3 lightOffset)
         {
             if (_SketchyLightFalloff.x <= 0) return 1;
@@ -120,6 +135,7 @@ Shader "Sketchy/Pencil Lit"
                 // Ground uses the same illumination and tone mapping as every surface.
                 float illumination=dot(illuminationColor,float3(0.2126,0.7152,0.0722));
                 float darkness=1-saturate(illumination+_SketchyAmbientIllumination);
+                darkness = RemapHatchDarkness(darkness);
                 float tone=darkness*lerp(_SketchyTone.x,_SketchyTone.y,darkness);
                 tone = _InkBias + (1-_InkBias)*tone;
                 if (_SketchyTone.w == 1) return half4(diffuse.xxx,1);

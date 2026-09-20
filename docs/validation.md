@@ -26,7 +26,8 @@ $env:BROWSER_EXECUTABLE_PATH = 'C:\path\to\chrome.exe'
 |---|---|
 | `scripts/build.py --check` | Generated demo matches its sources |
 | `tests/invariants.py` | Stroke IDs, nested centers, engraving continuity and approved shader hashes |
-| `tests/browser.cjs` | Scene rendering, outline wiggle, immediate redraws, seed stability, diagnostic views and mobile layout |
+| `tests/browser.cjs` | Scene rendering, outline wiggle, immediate redraws, seed stability, brightness controls, diagnostic views and mobile layout |
+| `tests/lighting.cjs` | Surface tone through the real city renderer, brightness-range endpoints and interpolation, and coincident cutoffs in both sampling modes |
 | `tests/walking.cjs` | Movement, wall collisions, input release, mode switching, mobile controls and stable stroke identity |
 | `tests/perspective.cjs` | Perspective visibility against CPU rays and false outlines on flat faces |
 | `tests/outlines.cjs` | Twelve analytic staircase edges: no perpendicular contour spurs beyond the allowed line-width envelope |
@@ -71,4 +72,4 @@ Check lit faces, deep shadows, flat-surface zoom transitions, curved chart blend
 
 Known limits include finite precision and octave range, approximate tone/filtering, contour jumps at descriptor changes, and fixed-height walking with static collision. Cars still move through a world-space hatch field. See [rendering](pipeline.md) and the [Unity guide](unity-srp.md) for the work these imply.
 
-`tests/lighting.cjs` renders a ground-only fixture through the city pipeline and checks analytic surface tone for lit, grazing and reverse-facing light directions in both sampling modes. It covers ground beyond the former shadow-only bounds. Unity rendering tests cover unlit surfaces, sphere transitions, UV-free triplanar attachment, colored-light attenuation and stable rough falloff.
+`tests/lighting.cjs` renders a ground-only fixture through the city pipeline and checks analytic surface tone for lit, grazing and reverse-facing light directions in both sampling modes. It covers ground beyond the former shadow-only bounds and brightness ranges that produce clear paper, full ink, intermediate ink and hard cutoffs. Unity's `BrightnessThresholdsControlInkWithoutChangingLighting` checks the same remapping in the material, independent material ink and runtime range validation; run it in the Unity editor alongside the existing lighting tests.
