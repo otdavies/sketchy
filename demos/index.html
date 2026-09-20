@@ -110,7 +110,6 @@ canvas:focus-visible { outline: 2px solid #87b6ed; outline-offset: -2px; }
       </div>
     </div>
     <div class="playback">
-      <label class="form-check"><input class="form-check-input" data-control="hold" type="checkbox" checked><span class="form-check-label">Hold drawings · 10 fps</span></label>
       <label class="form-check"><input class="form-check-input" data-control="traffic" type="checkbox" checked disabled><span class="form-check-label">Traffic</span></label>
       <button class="btn" type="button" data-play-kind="zoom">Play zoom</button>
       <button class="btn" type="button" data-play-kind="light" data-play>Play light</button>
@@ -144,9 +143,6 @@ uniform float lightAngle;
 uniform float spacing;
 uniform float frameSeed;
 uniform vec2 orbit;
-uniform vec2 heldOrbit;
-uniform float heldZoom;
-uniform float heldLight;
 uniform vec2 pan;
 uniform int scene;
 uniform int method;
@@ -430,6 +426,14 @@ float pnPencil(vec3 surfacePosition, vec3 surfaceNormal, vec3 positionDx, vec3 p
     return 1.0 - exp(-opticalDepth * graphiteDeposit * 1.12);
 }
 
+// Shared by the city and sculpture. Matches Unity's default PaperStyle values.
+// Unit light intensity, zero ambient fill. Material ink is independent of light.
+float pencilSurfaceTone(float illumination, float materialInk) {
+    float darkness = 1.0 - clamp(illumination, 0.0, 1.0);
+    float tone = darkness * mix(0.38, 0.86, darkness);
+    return materialInk + (1.0 - materialInk) * tone;
+}
+
 
 vec3 targetAtZoom(float zoom) {
     return mix(vec3(-0.12, -0.12, 0.0), vec3(0.5, -0.46, 0.1), smoothstep(0.0, 1.5, zoom));
@@ -498,18 +502,18 @@ float renderHatch(vec2 phases, float ink, vec2 stateFirst, vec2 stateSecond) {
         comparisonFamily(phases.y, crossCoverage, vec2(phaseDx.y, phaseDy.y), stateSecond);
     return primaryInk + crossInk - primaryInk * crossInk;
 }
-// Phase gradient in the HELD camera's pixel coordinates at this surface point.
+// Phase gradient in the current camera's pixel coordinates at this surface point.
 // Its local tangent-plane Jacobian is independent of current camera motion.
-vec2 heldGradient(vec3 position, vec3 surfaceNormal, vec3 phaseGradient) {
-    vec3 target = targetAtZoom(heldZoom);
-    vec3 cameraOrigin = target + 5.0 * vec3(sin(heldOrbit.x) * cos(heldOrbit.y), sin(heldOrbit.y),
-                                            cos(heldOrbit.x) * cos(heldOrbit.y));
+vec2 pixelGradient(vec3 position, vec3 surfaceNormal, vec3 phaseGradient) {
+    vec3 target = targetAtZoom(zoomStops);
+    vec3 cameraOrigin = target + 5.0 * vec3(sin(orbit.x) * cos(orbit.y), sin(orbit.y),
+                                            cos(orbit.x) * cos(orbit.y));
     vec3 cameraForward = normalize(target - cameraOrigin);
     vec3 cameraRight = normalize(cross(cameraForward, vec3(0, 1, 0)));
     vec3 cameraUp = cross(cameraRight, cameraForward);
     vec3 cameraToPoint = position - cameraOrigin;
     float viewDepth = max(dot(cameraToPoint, cameraForward), 0.001);
-    float pixelsPerUnit = resolution.y * 1.75 * exp2(heldZoom) / viewDepth;
+    float pixelsPerUnit = resolution.y * 1.75 * exp2(zoomStops) / viewDepth;
     vec3 screenGradientX =
         pixelsPerUnit * (cameraRight - cameraForward * dot(cameraToPoint, cameraRight) / viewDepth);
     vec3 screenGradientY =
@@ -541,13 +545,13 @@ void main() {
             secondPhaseGradient.x += 0.035 * 3.1 * cos(3.1 * surfacePosition.x);
         }
         float tone = scene == 2 ? clamp(gl_FragCoord.x / resolution.x, 0.0, 1.0)
-                                : clamp(heldLight, 0.0, 1.0);
-        float heldStep = 4.0 / (resolution.y * exp2(heldZoom));
+                                : clamp(lightAngle, 0.0, 1.0);
+        float pixelStep = 4.0 / (resolution.y * exp2(zoomStops));
         coverage = method == 0 ? pnPencil(vec3(surfacePosition, 0), vec3(0, 0, 1),
                                           vec3(dFdx(surfacePosition), 0),
                                           vec3(dFdy(surfacePosition), 0), tone, frameSeed)
-                               : renderHatch(phases, tone, firstPhaseGradient * heldStep,
-                                             secondPhaseGradient * heldStep);
+                               : renderHatch(phases, tone, firstPhaseGradient * pixelStep,
+                                             secondPhaseGradient * pixelStep);
     } else {
         // Raymarch the sculpture, then evaluate its surface-attached hatching.
         float yaw = orbit.x;
@@ -573,17 +577,12 @@ void main() {
         bool hit = rayDistance < 20.0;
         vec3 surfacePosition = cameraOrigin + rayDirection * min(rayDistance, 20.0);
         vec3 surfaceNormal = normalAt(surfacePosition);
-        float lightRadians = heldLight * 6.283185;
+        float lightRadians = lightAngle * 6.283185;
         vec3 lightDirection =
             normalize(vec3(cos(lightRadians) * 0.8, 0.85, sin(lightRadians) * 0.8));
         float visibility = shadowAt(surfacePosition + surfaceNormal * 0.004, lightDirection);
-        float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));
-        float shadow = max(formShadow, 1.0 - visibility);
-        float tone = 0.95 * pow(shadow, 1.12);
-        if (materialId > 3.5) {
-            tone = 0.93 * (1.0 - visibility) *
-                   (1.0 - smoothstep(2.0, 4.0, length(surfacePosition.xz)));
-        }
+        float illumination = max(dot(surfaceNormal, lightDirection), 0.0) * visibility;
+        float tone = pencilSurfaceTone(illumination, 0.0);
         vec2 phases = vec2(dot(surfacePosition, vec3(0.75, 1.0, 0.25)),
                            dot(surfacePosition, vec3(-0.65, 0.65, 0.80)));
         vec3 firstPhaseGradient = vec3(0.75, 1.0, 0.25);
@@ -608,8 +607,8 @@ void main() {
                 ? pnPencil(surfacePosition, surfaceNormal, dFdx(surfacePosition),
                            dFdy(surfacePosition), tone, frameSeed)
                 : renderHatch(phases, tone,
-                              heldGradient(surfacePosition, surfaceNormal, firstPhaseGradient),
-                              heldGradient(surfacePosition, surfaceNormal, secondPhaseGradient));
+                              pixelGradient(surfacePosition, surfaceNormal, firstPhaseGradient),
+                              pixelGradient(surfacePosition, surfaceNormal, secondPhaseGradient));
         float viewFacing = abs(dot(surfaceNormal, -rayDirection));
         float silhouetteInk = 1.0 - smoothstep(0.035, 0.095, viewFacing);
         if (materialId < 3.5) {
@@ -618,9 +617,6 @@ void main() {
         }
         if (!hit) {
             coverage = 0.0;
-        }
-        if (materialId > 3.5) {
-            coverage *= 1.0 - smoothstep(7.0, 15.0, length(surfacePosition.xz));
         }
     }
 
@@ -1385,6 +1381,34 @@ vec4 poFitAtSeed(ivec2 centerPixel) {
     vec2 seedOffset = poOffset(centerSeed);
     vec2 seedNormal = poNormal(centerSeed);
 
+    // A staircase turn can report a crossing perpendicular to the actual edge.
+    // Estimate a guide from POSITIONS before rejecting disagreeing directions;
+    // otherwise that isolated crossing rejects its correct neighbors and survives
+    // as a short perpendicular spur. Keep ambiguous corners on the original seed.
+    float guideWeight = 0.0;
+    vec2 guideSum = vec2(0.0);
+    vec3 guideMoments = vec3(0.0);
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            vec4 neighbor = poSeed(centerPixel + ivec2(x, y));
+            vec2 p = vec2(x, y) + poOffset(neighbor);
+            float w = neighbor.a / (1.0 + dot(p - seedOffset, p - seedOffset));
+            guideWeight += w;
+            guideSum += p * w;
+            guideMoments += vec3(p.x * p.x, p.x * p.y, p.y * p.y) * w;
+        }
+    }
+    vec2 guideMean = guideSum / max(guideWeight, 0.0001);
+    vec3 guideCov = guideMoments / max(guideWeight, 0.0001) -
+        vec3(guideMean.x * guideMean.x, guideMean.x * guideMean.y, guideMean.y * guideMean.y);
+    float guideCoherence = length(vec2(guideCov.x - guideCov.z, 2.0 * guideCov.y)) /
+        max(guideCov.x + guideCov.z, 0.0001);
+    if (guideCoherence > 0.82 && guideWeight > 1.5) {
+        float tangent = 0.5 * atan(2.0 * guideCov.y, guideCov.x - guideCov.z + 1e-8);
+        seedNormal = vec2(-sin(tangent), cos(tangent));
+    }
+    float guideAngle = mod(atan(seedNormal.y, seedNormal.x) + 1.570796327, 3.141592654) / 3.141592654;
+
     // Collect nearby crossings that agree with this seed's direction and contour.
     float totalWeight = 0.0;
     vec2 weightedPosition = vec2(0.0);
@@ -1397,7 +1421,7 @@ vec4 poFitAtSeed(ivec2 centerPixel) {
             }
             vec2 neighborOffset = vec2(x, y) + poOffset(neighborSeed);
             // Angle comparison for unoriented lines avoids sin/cos in the neighborhood.
-            float angleDifference = abs(neighborSeed.b - centerSeed.b);
+            float angleDifference = abs(neighborSeed.b - guideAngle);
             angleDifference = min(angleDifference, 1.0 - angleDifference);
             float directionAgreement = 1.0 - smoothstep(0.12, 0.27, angleDifference);
             float sameContourWeight =
@@ -1452,40 +1476,42 @@ float poFittedInk(vec2 pixelPosition, float frameSeed, float jitterPixels, int o
         return 0.0;
     }
     ivec2 centerPixel = ivec2(pixelPosition);
-    float closestDistanceSquared = 1e9;
-    vec2 closestOffset = vec2(0);
-    vec4 closestDescriptor = vec4(0);
-    for (int y = -2; y <= 2; y++) {
-        for (int x = -2; x <= 2; x++) {
-            vec4 descriptor = poSeed(centerPixel + ivec2(x, y));
-            vec2 neighborOffset = vec2(x, y) + poOffset(descriptor);
-            float distanceSquared = dot(neighborOffset, neighborOffset);
-            if (descriptor.a > 0.01 && distanceSquared < closestDistanceSquared) {
-                closestDistanceSquared = distanceSquared;
-                closestOffset = neighborOffset;
-                closestDescriptor = descriptor;
-            }
-        }
-    }
-    if (closestDistanceSquared > 5.5) {
-        return 0.0;
-    }
-
-    // Shade the closest local line. Only Pencil fit (mode 2) varies its placement
-    // and pressure; Stable fit and Lines only keep their fixed line appearance.
-    float distanceToLine = dot(-closestOffset, poNormal(closestDescriptor));
+    float closestDistance = 1e9;
+    float closestConfidence = 0.0;
     float linePressure = 1.0;
     float lineDisplacement = 0.0;
     if (outlineMode == 2) {
-        lineDisplacement =
-            jitterPixels *
+        lineDisplacement = jitterPixels *
             (2.0 * pnNoise(pixelPosition * 0.035 + vec2(frameSeed * 3.17, frameSeed * 0.91)) - 1.0);
         linePressure = 0.70 + 0.38 * pnNoise(pixelPosition * 0.12 + vec2(frameSeed * 0.73, 11));
     }
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            vec4 descriptor = poSeed(centerPixel + ivec2(x, y));
+            if (descriptor.a < 0.01) continue;
+            vec2 neighborOffset = vec2(x, y) + poOffset(descriptor);
+            vec2 normal = poNormal(descriptor);
+            float across = dot(-neighborOffset, normal) - lineDisplacement;
+            float along = dot(neighborOffset, vec2(-normal.y, normal.x));
+            // Distance to a finite local boundary segment, not an infinite line.
+            // The cap prevents a bad/junction descriptor from projecting a spike
+            // across its entire search neighborhood. Choose the closest boundary,
+            // rather than choosing an anchor first and then extending its line.
+            float distanceToSegment = length(vec2(across, max(abs(along) - 0.75, 0.0)));
+            if (distanceToSegment < closestDistance) {
+                closestDistance = distanceToSegment;
+                closestConfidence = descriptor.a;
+            }
+        }
+    }
+    if (closestDistance > 2.5) {
+        return 0.0;
+    }
+
     float lineCoverage =
-        clamp(0.64 * linePressure + 0.6 - abs(distanceToLine - lineDisplacement), 0.0, 1.0);
+        clamp(0.64 * linePressure + 0.6 - closestDistance, 0.0, 1.0);
     float paperContact = outlineMode == 2 ? 0.76 + 0.24 * pnHash(floor(pixelPosition)) : 1.0;
-    return lineCoverage * (outlineMode == 2 ? 0.83 : 0.84) * paperContact * closestDescriptor.a;
+    return lineCoverage * (outlineMode == 2 ? 0.83 : 0.84) * paperContact * closestConfidence;
 }
 #endif
 
@@ -1818,7 +1844,7 @@ function buildPencilCityGeometry(extended = false, castersOnly = false, collider
   return vertices;
 }
 
-const CITY_SHADERS = {"vertex": "#version 300 es\nprecision highp float;\nlayout(location = 0) in vec3 position;\nlayout(location = 1) in vec3 normal;\nlayout(location = 2) in float material;\nuniform mat4 viewProjection, lightProjection;\nout vec3 worldPosition;\nout vec3 worldNormal;\nout vec4 lightClipPosition;\nflat out float materialId;\nflat out float planeDistance;\ninvariant gl_Position;\n// Shared by the camera and shadow passes so moving cars stay aligned.\n// Material IDs >= 16 encode a car number and its local material category.\n// Distances below describe the existing rectangular road route in scene units.\nuniform float trafficTime;\nvoid vehicle(inout vec3 worldPosition, inout vec3 worldNormal, inout float materialId) {\n    if (materialId < 16.0) {\n        return;\n    }\n    float vehicleId = floor((materialId - 16.0) / 8.0);\n    materialId = mod(materialId, 8.0);\n    float routeDistance = mod(trafficTime * 0.72 + vehicleId * 8.24, 32.96);\n    vec2 vehicleCenter;\n    vec2 travelDirection;\n    if (routeDistance < 8.84) {\n        vehicleCenter = vec2(-4.42 + routeDistance, -3.82);\n        travelDirection = vec2(1, 0);\n    } else if (routeDistance < 16.48) {\n        vehicleCenter = vec2(4.42, -3.82 + (routeDistance - 8.84));\n        travelDirection = vec2(0, 1);\n    } else if (routeDistance < 25.32) {\n        vehicleCenter = vec2(4.42 - (routeDistance - 16.48), 3.82);\n        travelDirection = vec2(-1, 0);\n    } else {\n        vehicleCenter = vec2(-4.42, 3.82 - (routeDistance - 25.32));\n        travelDirection = vec2(0, -1);\n    }\n    mat2 vehicleRotation = mat2(travelDirection, vec2(-travelDirection.y, travelDirection.x));\n    worldPosition.xz = vehicleRotation * worldPosition.xz + vehicleCenter;\n    worldNormal.xz = vehicleRotation * worldNormal.xz;\n}\n\n// Keep exactly this vertex transform for every camera pass: equal-depth\n// testing depends on identical rasterized positions in visibility and shading.\nvoid main() {\n    worldPosition = position;\n    worldNormal = normal;\n    materialId = material;\n    vehicle(worldPosition, worldNormal, materialId);\n    planeDistance = dot(worldNormal, worldPosition);\n    lightClipPosition = lightProjection * vec4(worldPosition, 1);\n    gl_Position = viewProjection * vec4(worldPosition, 1);\n}\n", "shadowVertex": "#version 300 es\nprecision highp float;\nlayout(location = 0) in vec3 position;\nlayout(location = 1) in vec3 normal;\nlayout(location = 2) in float material;\nuniform mat4 lightProjection;\n// Shared by the camera and shadow passes so moving cars stay aligned.\n// Material IDs >= 16 encode a car number and its local material category.\n// Distances below describe the existing rectangular road route in scene units.\nuniform float trafficTime;\nvoid vehicle(inout vec3 worldPosition, inout vec3 worldNormal, inout float materialId) {\n    if (materialId < 16.0) {\n        return;\n    }\n    float vehicleId = floor((materialId - 16.0) / 8.0);\n    materialId = mod(materialId, 8.0);\n    float routeDistance = mod(trafficTime * 0.72 + vehicleId * 8.24, 32.96);\n    vec2 vehicleCenter;\n    vec2 travelDirection;\n    if (routeDistance < 8.84) {\n        vehicleCenter = vec2(-4.42 + routeDistance, -3.82);\n        travelDirection = vec2(1, 0);\n    } else if (routeDistance < 16.48) {\n        vehicleCenter = vec2(4.42, -3.82 + (routeDistance - 8.84));\n        travelDirection = vec2(0, 1);\n    } else if (routeDistance < 25.32) {\n        vehicleCenter = vec2(4.42 - (routeDistance - 16.48), 3.82);\n        travelDirection = vec2(-1, 0);\n    } else {\n        vehicleCenter = vec2(-4.42, 3.82 - (routeDistance - 25.32));\n        travelDirection = vec2(0, -1);\n    }\n    mat2 vehicleRotation = mat2(travelDirection, vec2(-travelDirection.y, travelDirection.x));\n    worldPosition.xz = vehicleRotation * worldPosition.xz + vehicleCenter;\n    worldNormal.xz = vehicleRotation * worldNormal.xz;\n}\n\nvoid main() {\n    vec3 worldPosition = position;\n    vec3 worldNormal = normal;\n    float materialId = material;\n    vehicle(worldPosition, worldNormal, materialId);\n    gl_Position = lightProjection * vec4(worldPosition, 1);\n}\n", "depth": "#version 300 es\nprecision highp float;\nvoid main() {\n}\n", "fill": "#version 300 es\nprecision highp float;\nin vec3 worldPosition;\nin vec3 worldNormal;\nin vec4 lightClipPosition;\nflat in float materialId;\nflat in float planeDistance;\nlayout(location = 0) out vec4 color;\nlayout(location = 1) out vec4 meta;\nuniform int fastSampling;\nuniform float drawing;\nuniform int method;\n// Pixel ray / geometric plane intersection (orthographic or perspective). The position and its\n// footprint come from the SAME mapping, independent of triangle raster snapping.\n// Camera basis and plane data are in world space. planeDistance = dot(surfaceNormal, surfacePosition).\n// worldPerPixel is constant for orbit views; for perspective it is the scale\n// at unit view depth. sampleScale converts supersample pixels to output pixels.\nuniform vec3 eye;\nuniform vec3 cameraRight;\nuniform vec3 cameraUp;\nuniform vec3 cameraForward;\nuniform vec2 resolution;\nuniform float worldPerPixel;\nuniform float sampleScale;\nuniform int cameraPerspective;\nuniform mat4 lightProjection;\n\nvec3 citySurfacePoint(vec3 surfaceNormal, float planeDistance, out vec3 positionDx,\n                      out vec3 positionDy) {\n    // Perspective: intersect the varying pixel ray with this face, then\n    // differentiate that same intersection with respect to screen x and y.\n    if (cameraPerspective == 1) {\n        vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n        vec3 pixelRay = cameraForward + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n        float rayPlaneDenominator = dot(surfaceNormal, pixelRay);\n        rayPlaneDenominator =\n            (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n        float viewDepth = (planeDistance - dot(surfaceNormal, eye)) / rayPlaneDenominator;\n        positionDx =\n            viewDepth * worldPerPixel *\n            (cameraRight - pixelRay * dot(surfaceNormal, cameraRight) / rayPlaneDenominator);\n        positionDy = viewDepth * worldPerPixel *\n                     (cameraUp - pixelRay * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n        return eye + pixelRay * viewDepth;\n    }\n\n    // Orthographic: every ray has the same direction and a different origin.\n    float rayPlaneDenominator = dot(surfaceNormal, cameraForward);\n    rayPlaneDenominator =\n        (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n    vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n    vec3 rayOrigin = eye + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n    positionDx = worldPerPixel * (cameraRight - cameraForward * dot(surfaceNormal, cameraRight) /\n                                                    rayPlaneDenominator);\n    positionDy = worldPerPixel *\n                 (cameraUp - cameraForward * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n    return rayOrigin +\n           cameraForward * ((planeDistance - dot(surfaceNormal, rayOrigin)) / rayPlaneDenominator);\n}\n\n// Light direction points FROM the surface TOWARD the sun. Camera-independent.\n// Geometric face normals are required for receiver-plane filtering.\nuniform vec3 lightDirection;\nuniform vec3 lightRight;\nuniform vec3 lightUp;\nuniform float shadowPlaneScale;\nuniform highp sampler2DShadow shadowMap;\n\n// Change in normalized light depth per unit of shadow-map UV.\nvec2 cityPlaneSlope(vec3 surfaceNormal) {\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    lightFacing = (lightFacing < 0.0 ? -1.0 : 1.0) * max(abs(lightFacing), 1e-7);\n    return shadowPlaneScale * vec2(dot(surfaceNormal, lightRight), dot(surfaceNormal, lightUp)) /\n           lightFacing;\n}\n\nfloat cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {\n    // Opaque back-facing surfaces receive no direct sun. This is visibility, not\n    // the artistic form-tone term; raw mode must not paint these faces white.\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    if (lightFacing <= 0.0) {\n        return 0.0;\n    }\n    vec3 shadowCoordinate = lightClipPosition.xyz / lightClipPosition.w * 0.5 + 0.5;\n    if (any(lessThan(shadowCoordinate, vec3(0))) || any(greaterThan(shadowCoordinate, vec3(1)))) {\n        return 1.0;\n    }\n    // Exact receiver plane in light space. Its slope is independent of the camera,\n    // and is not arbitrarily clamped at grazing incidence.\n    vec2 receiverSlope = cityPlaneSlope(surfaceNormal);\n    ivec2 shadowSize = textureSize(shadowMap, 0);\n    ivec2 baseTexel = ivec2(floor(shadowCoordinate.xy * vec2(shadowSize)));\n    // Comparison tolerance includes a depth-precision floor and a fraction of one\n    // world-space shadow texel. It is independent of camera distance/resolution.\n    float depthBias = 2.0 / 65535.0 + 0.125 * shadowPlaneScale / float(shadowSize.x);\n\n    // Separable quadratic B-spline weights across a 3x3 texel neighborhood.\n    // Compute each comparison at its texel center to avoid receiver-plane acne.\n    vec2 texelOffset = fract(shadowCoordinate.xy * vec2(shadowSize)) - 0.5;\n    vec3 weightsX = vec3(0.5 * (0.5 - texelOffset.x) * (0.5 - texelOffset.x),\n                         0.75 - texelOffset.x * texelOffset.x,\n                         0.5 * (0.5 + texelOffset.x) * (0.5 + texelOffset.x));\n    vec3 weightsY = vec3(0.5 * (0.5 - texelOffset.y) * (0.5 - texelOffset.y),\n                         0.75 - texelOffset.y * texelOffset.y,\n                         0.5 * (0.5 + texelOffset.y) * (0.5 + texelOffset.y));\n\n    float occlusion = 0.0;\n    for (int tapX = -1; tapX <= 1; tapX++) {\n        for (int tapY = -1; tapY <= 1; tapY++) {\n            ivec2 tapTexel = baseTexel + ivec2(tapX, tapY);\n            // Border taps are clear. Clamping would stretch an edge occluder outward.\n            if (any(lessThan(tapTexel, ivec2(0))) || any(greaterThanEqual(tapTexel, shadowSize))) {\n                continue;\n            }\n            vec2 tapUV = (vec2(tapTexel) + 0.5) / vec2(shadowSize);\n            // NEAREST samples this texel CENTER, not the unquantized requested UV.\n            float receiverDepth =\n                shadowCoordinate.z + dot(receiverSlope, tapUV - shadowCoordinate.xy);\n            // At grazing incidence a neighboring receiver-plane point can leave the\n            // light's depth volume even when the center pixel is inside it. Such a tap\n            // has no valid shadow information; comparing it with clear depth creates a\n            // false half-shadow and map-border patterns.\n            if (receiverDepth < 0.0 || receiverDepth > 1.0) {\n                continue;\n            }\n            // Compare in the depth texture unit; do not fetch/round depth into color math.\n            float visibility = textureLod(shadowMap, vec3(tapUV, receiverDepth - depthBias), 0.0);\n            occlusion += (1.0 - visibility) * weightsX[tapX + 1] * weightsY[tapY + 1];\n        }\n    }\n    // Summing occlusion preserves EXACTLY zero shadow on an unoccluded plane.\n    return 1.0 - (occlusion > 0.999999 ? 1.0 : clamp(occlusion, 0.0, 1.0));\n}\n\n// Indirect illumination keeps ordinary turning faces lighter than cast shadows.\n// This controls ink demand, not stroke placement or the paper/graphite colors.\nfloat cityPencilTone(vec3 surfaceNormal, float sunVisibility, float material) {\n    float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));\n    // Keep unlit form shading separate from additional cast-shadow ink. Direct\n    // visibility is zero on reverse faces, but they need not become black pencil.\n    float castShadow =\n        (1.0 - sunVisibility) * smoothstep(0.01, 0.03, dot(surfaceNormal, lightDirection));\n    // Material categories: 0/1 = walls and roofs, 2 = dark facade details,\n    // 3/4 = ground, paving and roads. Constants below are the existing art direction.\n    if (material > 2.5) {\n        return 0.87 * castShadow;\n    }\n    if (material > 1.5) {\n        return 0.70 + 0.22 * max(formShadow, castShadow);\n    }\n    return max(0.38 * pow(formShadow, 1.12), 0.86 * pow(castShadow, 1.12));\n}\n\n// PENCIL_CORE_INSERT\n\n// Pipeline: surface position -> sun visibility -> ink demand -> stroke coverage\n// -> paper contact. Shading methods: 0 pencil, 1 engraving, 2 fixed stripes.\nvoid main() {\n    // Reconstruct position and footprint together before evaluating the hatching.\n    vec3 positionDx;\n    vec3 positionDy;\n    vec3 surfacePosition = citySurfacePoint(worldNormal, planeDistance, positionDx, positionDy);\n    float sunVisibility =\n        cityShadowVisibility(lightProjection * vec4(surfacePosition, 1), worldNormal);\n    float tone = cityPencilTone(worldNormal, sunVisibility, materialId);\n\n    // Paper and roads retain their original base colors even without hatch ink.\n    float paperTooth = pnHash(floor(gl_FragCoord.xy / sampleScale));\n    vec3 paperColor = vec3(0.984, 0.978, 0.958) * (0.978 + 0.022 * paperTooth);\n    if (materialId > 3.5) {\n        paperColor *= 0.96;\n    }\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n    // Exit the FRAGMENT entry point, not only the nested hatch helper. This makes\n    // complete paper quads cheap even on backends that flatten helper branches.\n    if (tone <= 0.0) {\n        color = vec4(paperColor, 1);\n        return;\n    }\n    // Roofs share paper highlights; no decorative ink on fully lit surfaces.\n    // Two symmetric samples preserve the fine graphite coverage. Geometry uses\n    // native MSAA; outlines retain the original independent 2x metadata samples.\n    vec3 sampleOffset = fastSampling == 1 ? 0.25 * (positionDx + positionDy) : vec3(0.0);\n    float inkCoverage = pnPencil(surfacePosition - sampleOffset, worldNormal, positionDx,\n                                 positionDy, tone, drawing);\n    if (fastSampling == 1) {\n        inkCoverage = 0.5 * (inkCoverage + pnPencil(surfacePosition + sampleOffset, worldNormal,\n                                                    positionDx, positionDy, tone, drawing));\n    }\n\n    // Comparison modes reuse the same surface and its matching derivatives.\n    if (method > 0) {\n        vec2 chartPosition =\n            abs(worldNormal.y) > 0.8\n                ? surfacePosition.xz\n                : (abs(worldNormal.x) > 0.7 ? surfacePosition.zy : surfacePosition.xy);\n        float phase = dot(chartPosition, vec2(1, 0.6));\n        vec2 chartDx = abs(worldNormal.y) > 0.8\n                           ? positionDx.xz\n                           : (abs(worldNormal.x) > 0.7 ? positionDx.zy : positionDx.xy);\n        vec2 chartDy = abs(worldNormal.y) > 0.8\n                           ? positionDy.xz\n                           : (abs(worldNormal.x) > 0.7 ? positionDy.zy : positionDy.xy);\n        vec2 phaseGradient = vec2(dot(chartDx, vec2(1, 0.6)), dot(chartDy, vec2(1, 0.6)));\n        inkCoverage = method == 1 ? fhFamilyState(phase, phaseGradient, phaseGradient, tone, 7.0)\n                                  : fhStripe(phase * 32.0, tone,\n                                             (abs(phaseGradient.x) + abs(phaseGradient.y)) * 32.0);\n    }\n\n    // Paper contact affects light deposits more strongly than dense overlaps.\n    float paperFibre = pnNoise(gl_FragCoord.xy / sampleScale * vec2(0.13, 0.87));\n    inkCoverage *= mix(clamp(0.80 + 0.27 * paperTooth + 0.13 * paperFibre, 0.0, 1.0), 1.0,\n                       pow(inkCoverage, 3.0));\n    if (materialId > 2.5) {\n        inkCoverage *= 1.0 - smoothstep(4.8, 7.8, length(surfacePosition.xz));\n    }\n    color = vec4(mix(paperColor, vec3(0.125, 0.119, 0.115), inkCoverage), 1);\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "paper": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float materialId;\nuniform float sampleScale;\nlayout(location = 0) out vec4 color;\nlayout(location = 1) out vec4 meta;\n// PENCIL_CORE_INSERT\nvoid main() {\n    float paperTooth = pnHash(floor(gl_FragCoord.xy / sampleScale));\n    color = vec4(vec3(0.984, 0.978, 0.958) * (0.978 + 0.022 * paperTooth), 1);\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "raw": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float planeDistance;\nout vec4 color;\nuniform int debugView;\n// Pixel ray / geometric plane intersection (orthographic or perspective). The position and its\n// footprint come from the SAME mapping, independent of triangle raster snapping.\n// Camera basis and plane data are in world space. planeDistance = dot(surfaceNormal, surfacePosition).\n// worldPerPixel is constant for orbit views; for perspective it is the scale\n// at unit view depth. sampleScale converts supersample pixels to output pixels.\nuniform vec3 eye;\nuniform vec3 cameraRight;\nuniform vec3 cameraUp;\nuniform vec3 cameraForward;\nuniform vec2 resolution;\nuniform float worldPerPixel;\nuniform float sampleScale;\nuniform int cameraPerspective;\nuniform mat4 lightProjection;\n\nvec3 citySurfacePoint(vec3 surfaceNormal, float planeDistance, out vec3 positionDx,\n                      out vec3 positionDy) {\n    // Perspective: intersect the varying pixel ray with this face, then\n    // differentiate that same intersection with respect to screen x and y.\n    if (cameraPerspective == 1) {\n        vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n        vec3 pixelRay = cameraForward + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n        float rayPlaneDenominator = dot(surfaceNormal, pixelRay);\n        rayPlaneDenominator =\n            (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n        float viewDepth = (planeDistance - dot(surfaceNormal, eye)) / rayPlaneDenominator;\n        positionDx =\n            viewDepth * worldPerPixel *\n            (cameraRight - pixelRay * dot(surfaceNormal, cameraRight) / rayPlaneDenominator);\n        positionDy = viewDepth * worldPerPixel *\n                     (cameraUp - pixelRay * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n        return eye + pixelRay * viewDepth;\n    }\n\n    // Orthographic: every ray has the same direction and a different origin.\n    float rayPlaneDenominator = dot(surfaceNormal, cameraForward);\n    rayPlaneDenominator =\n        (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n    vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n    vec3 rayOrigin = eye + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n    positionDx = worldPerPixel * (cameraRight - cameraForward * dot(surfaceNormal, cameraRight) /\n                                                    rayPlaneDenominator);\n    positionDy = worldPerPixel *\n                 (cameraUp - cameraForward * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n    return rayOrigin +\n           cameraForward * ((planeDistance - dot(surfaceNormal, rayOrigin)) / rayPlaneDenominator);\n}\n\n// Light direction points FROM the surface TOWARD the sun. Camera-independent.\n// Geometric face normals are required for receiver-plane filtering.\nuniform vec3 lightDirection;\nuniform vec3 lightRight;\nuniform vec3 lightUp;\nuniform float shadowPlaneScale;\nuniform highp sampler2DShadow shadowMap;\n\n// Change in normalized light depth per unit of shadow-map UV.\nvec2 cityPlaneSlope(vec3 surfaceNormal) {\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    lightFacing = (lightFacing < 0.0 ? -1.0 : 1.0) * max(abs(lightFacing), 1e-7);\n    return shadowPlaneScale * vec2(dot(surfaceNormal, lightRight), dot(surfaceNormal, lightUp)) /\n           lightFacing;\n}\n\nfloat cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {\n    // Opaque back-facing surfaces receive no direct sun. This is visibility, not\n    // the artistic form-tone term; raw mode must not paint these faces white.\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    if (lightFacing <= 0.0) {\n        return 0.0;\n    }\n    vec3 shadowCoordinate = lightClipPosition.xyz / lightClipPosition.w * 0.5 + 0.5;\n    if (any(lessThan(shadowCoordinate, vec3(0))) || any(greaterThan(shadowCoordinate, vec3(1)))) {\n        return 1.0;\n    }\n    // Exact receiver plane in light space. Its slope is independent of the camera,\n    // and is not arbitrarily clamped at grazing incidence.\n    vec2 receiverSlope = cityPlaneSlope(surfaceNormal);\n    ivec2 shadowSize = textureSize(shadowMap, 0);\n    ivec2 baseTexel = ivec2(floor(shadowCoordinate.xy * vec2(shadowSize)));\n    // Comparison tolerance includes a depth-precision floor and a fraction of one\n    // world-space shadow texel. It is independent of camera distance/resolution.\n    float depthBias = 2.0 / 65535.0 + 0.125 * shadowPlaneScale / float(shadowSize.x);\n\n    // Separable quadratic B-spline weights across a 3x3 texel neighborhood.\n    // Compute each comparison at its texel center to avoid receiver-plane acne.\n    vec2 texelOffset = fract(shadowCoordinate.xy * vec2(shadowSize)) - 0.5;\n    vec3 weightsX = vec3(0.5 * (0.5 - texelOffset.x) * (0.5 - texelOffset.x),\n                         0.75 - texelOffset.x * texelOffset.x,\n                         0.5 * (0.5 + texelOffset.x) * (0.5 + texelOffset.x));\n    vec3 weightsY = vec3(0.5 * (0.5 - texelOffset.y) * (0.5 - texelOffset.y),\n                         0.75 - texelOffset.y * texelOffset.y,\n                         0.5 * (0.5 + texelOffset.y) * (0.5 + texelOffset.y));\n\n    float occlusion = 0.0;\n    for (int tapX = -1; tapX <= 1; tapX++) {\n        for (int tapY = -1; tapY <= 1; tapY++) {\n            ivec2 tapTexel = baseTexel + ivec2(tapX, tapY);\n            // Border taps are clear. Clamping would stretch an edge occluder outward.\n            if (any(lessThan(tapTexel, ivec2(0))) || any(greaterThanEqual(tapTexel, shadowSize))) {\n                continue;\n            }\n            vec2 tapUV = (vec2(tapTexel) + 0.5) / vec2(shadowSize);\n            // NEAREST samples this texel CENTER, not the unquantized requested UV.\n            float receiverDepth =\n                shadowCoordinate.z + dot(receiverSlope, tapUV - shadowCoordinate.xy);\n            // At grazing incidence a neighboring receiver-plane point can leave the\n            // light's depth volume even when the center pixel is inside it. Such a tap\n            // has no valid shadow information; comparing it with clear depth creates a\n            // false half-shadow and map-border patterns.\n            if (receiverDepth < 0.0 || receiverDepth > 1.0) {\n                continue;\n            }\n            // Compare in the depth texture unit; do not fetch/round depth into color math.\n            float visibility = textureLod(shadowMap, vec3(tapUV, receiverDepth - depthBias), 0.0);\n            occlusion += (1.0 - visibility) * weightsX[tapX + 1] * weightsY[tapY + 1];\n        }\n    }\n    // Summing occlusion preserves EXACTLY zero shadow on an unoccluded plane.\n    return 1.0 - (occlusion > 0.999999 ? 1.0 : clamp(occlusion, 0.0, 1.0));\n}\n\n// Indirect illumination keeps ordinary turning faces lighter than cast shadows.\n// This controls ink demand, not stroke placement or the paper/graphite colors.\nfloat cityPencilTone(vec3 surfaceNormal, float sunVisibility, float material) {\n    float formShadow = 1.0 - smoothstep(-0.25, 0.48, dot(surfaceNormal, lightDirection));\n    // Keep unlit form shading separate from additional cast-shadow ink. Direct\n    // visibility is zero on reverse faces, but they need not become black pencil.\n    float castShadow =\n        (1.0 - sunVisibility) * smoothstep(0.01, 0.03, dot(surfaceNormal, lightDirection));\n    // Material categories: 0/1 = walls and roofs, 2 = dark facade details,\n    // 3/4 = ground, paving and roads. Constants below are the existing art direction.\n    if (material > 2.5) {\n        return 0.87 * castShadow;\n    }\n    if (material > 1.5) {\n        return 0.70 + 0.22 * max(formShadow, castShadow);\n    }\n    return max(0.38 * pow(formShadow, 1.12), 0.86 * pow(castShadow, 1.12));\n}\n\nvoid main() {\n    if (debugView == 2) {\n        color = vec4(vec3(max(dot(worldNormal, lightDirection), 0.0)), 1);\n        return;\n    }\n    vec3 positionDx;\n    vec3 positionDy;\n    vec3 surfacePosition = citySurfacePoint(worldNormal, planeDistance, positionDx, positionDy);\n    color = vec4(\n        vec3(cityShadowVisibility(lightProjection * vec4(surfacePosition, 1), worldNormal)), 1);\n}\n", "metadata": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float materialId;\nlayout(location = 1) out vec4 meta;\nvoid main() {\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "fullscreen": "#version 300 es\n// A single oversized triangle covers the viewport without a shared diagonal.\nvoid main() {\n    vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n    gl_Position = vec4(corner * 2.0 - 1.0, 0, 1);\n}\n"};
+const CITY_SHADERS = {"vertex": "#version 300 es\nprecision highp float;\nlayout(location = 0) in vec3 position;\nlayout(location = 1) in vec3 normal;\nlayout(location = 2) in float material;\nuniform mat4 viewProjection, lightProjection;\nout vec3 worldPosition;\nout vec3 worldNormal;\nout vec4 lightClipPosition;\nflat out float materialId;\nflat out float planeDistance;\ninvariant gl_Position;\n// Shared by the camera and shadow passes so moving cars stay aligned.\n// Material IDs >= 16 encode a car number and its local material category.\n// Distances below describe the existing rectangular road route in scene units.\nuniform float trafficTime;\nvoid vehicle(inout vec3 worldPosition, inout vec3 worldNormal, inout float materialId) {\n    if (materialId < 16.0) {\n        return;\n    }\n    float vehicleId = floor((materialId - 16.0) / 8.0);\n    materialId = mod(materialId, 8.0);\n    float routeDistance = mod(trafficTime * 0.72 + vehicleId * 8.24, 32.96);\n    vec2 vehicleCenter;\n    vec2 travelDirection;\n    if (routeDistance < 8.84) {\n        vehicleCenter = vec2(-4.42 + routeDistance, -3.82);\n        travelDirection = vec2(1, 0);\n    } else if (routeDistance < 16.48) {\n        vehicleCenter = vec2(4.42, -3.82 + (routeDistance - 8.84));\n        travelDirection = vec2(0, 1);\n    } else if (routeDistance < 25.32) {\n        vehicleCenter = vec2(4.42 - (routeDistance - 16.48), 3.82);\n        travelDirection = vec2(-1, 0);\n    } else {\n        vehicleCenter = vec2(-4.42, 3.82 - (routeDistance - 25.32));\n        travelDirection = vec2(0, -1);\n    }\n    mat2 vehicleRotation = mat2(travelDirection, vec2(-travelDirection.y, travelDirection.x));\n    worldPosition.xz = vehicleRotation * worldPosition.xz + vehicleCenter;\n    worldNormal.xz = vehicleRotation * worldNormal.xz;\n}\n\n// Keep exactly this vertex transform for every camera pass: equal-depth\n// testing depends on identical rasterized positions in visibility and shading.\nvoid main() {\n    worldPosition = position;\n    worldNormal = normal;\n    materialId = material;\n    vehicle(worldPosition, worldNormal, materialId);\n    planeDistance = dot(worldNormal, worldPosition);\n    lightClipPosition = lightProjection * vec4(worldPosition, 1);\n    gl_Position = viewProjection * vec4(worldPosition, 1);\n}\n", "shadowVertex": "#version 300 es\nprecision highp float;\nlayout(location = 0) in vec3 position;\nlayout(location = 1) in vec3 normal;\nlayout(location = 2) in float material;\nuniform mat4 lightProjection;\n// Shared by the camera and shadow passes so moving cars stay aligned.\n// Material IDs >= 16 encode a car number and its local material category.\n// Distances below describe the existing rectangular road route in scene units.\nuniform float trafficTime;\nvoid vehicle(inout vec3 worldPosition, inout vec3 worldNormal, inout float materialId) {\n    if (materialId < 16.0) {\n        return;\n    }\n    float vehicleId = floor((materialId - 16.0) / 8.0);\n    materialId = mod(materialId, 8.0);\n    float routeDistance = mod(trafficTime * 0.72 + vehicleId * 8.24, 32.96);\n    vec2 vehicleCenter;\n    vec2 travelDirection;\n    if (routeDistance < 8.84) {\n        vehicleCenter = vec2(-4.42 + routeDistance, -3.82);\n        travelDirection = vec2(1, 0);\n    } else if (routeDistance < 16.48) {\n        vehicleCenter = vec2(4.42, -3.82 + (routeDistance - 8.84));\n        travelDirection = vec2(0, 1);\n    } else if (routeDistance < 25.32) {\n        vehicleCenter = vec2(4.42 - (routeDistance - 16.48), 3.82);\n        travelDirection = vec2(-1, 0);\n    } else {\n        vehicleCenter = vec2(-4.42, 3.82 - (routeDistance - 25.32));\n        travelDirection = vec2(0, -1);\n    }\n    mat2 vehicleRotation = mat2(travelDirection, vec2(-travelDirection.y, travelDirection.x));\n    worldPosition.xz = vehicleRotation * worldPosition.xz + vehicleCenter;\n    worldNormal.xz = vehicleRotation * worldNormal.xz;\n}\n\nvoid main() {\n    vec3 worldPosition = position;\n    vec3 worldNormal = normal;\n    float materialId = material;\n    vehicle(worldPosition, worldNormal, materialId);\n    gl_Position = lightProjection * vec4(worldPosition, 1);\n}\n", "depth": "#version 300 es\nprecision highp float;\nvoid main() {\n}\n", "fill": "#version 300 es\nprecision highp float;\nin vec3 worldPosition;\nin vec3 worldNormal;\nin vec4 lightClipPosition;\nflat in float materialId;\nflat in float planeDistance;\nlayout(location = 0) out vec4 color;\nlayout(location = 1) out vec4 meta;\nuniform int fastSampling;\nuniform float drawing;\nuniform int method;\n// Pixel ray / geometric plane intersection (orthographic or perspective). The position and its\n// footprint come from the SAME mapping, independent of triangle raster snapping.\n// Camera basis and plane data are in world space. planeDistance = dot(surfaceNormal, surfacePosition).\n// worldPerPixel is constant for orbit views; for perspective it is the scale\n// at unit view depth. sampleScale converts supersample pixels to output pixels.\nuniform vec3 eye;\nuniform vec3 cameraRight;\nuniform vec3 cameraUp;\nuniform vec3 cameraForward;\nuniform vec2 resolution;\nuniform float worldPerPixel;\nuniform float sampleScale;\nuniform int cameraPerspective;\nuniform mat4 lightProjection;\n\nvec3 citySurfacePoint(vec3 surfaceNormal, float planeDistance, out vec3 positionDx,\n                      out vec3 positionDy) {\n    // Perspective: intersect the varying pixel ray with this face, then\n    // differentiate that same intersection with respect to screen x and y.\n    if (cameraPerspective == 1) {\n        vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n        vec3 pixelRay = cameraForward + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n        float rayPlaneDenominator = dot(surfaceNormal, pixelRay);\n        rayPlaneDenominator =\n            (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n        float viewDepth = (planeDistance - dot(surfaceNormal, eye)) / rayPlaneDenominator;\n        positionDx =\n            viewDepth * worldPerPixel *\n            (cameraRight - pixelRay * dot(surfaceNormal, cameraRight) / rayPlaneDenominator);\n        positionDy = viewDepth * worldPerPixel *\n                     (cameraUp - pixelRay * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n        return eye + pixelRay * viewDepth;\n    }\n\n    // Orthographic: every ray has the same direction and a different origin.\n    float rayPlaneDenominator = dot(surfaceNormal, cameraForward);\n    rayPlaneDenominator =\n        (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n    vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n    vec3 rayOrigin = eye + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n    positionDx = worldPerPixel * (cameraRight - cameraForward * dot(surfaceNormal, cameraRight) /\n                                                    rayPlaneDenominator);\n    positionDy = worldPerPixel *\n                 (cameraUp - cameraForward * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n    return rayOrigin +\n           cameraForward * ((planeDistance - dot(surfaceNormal, rayOrigin)) / rayPlaneDenominator);\n}\n\n// Light direction points FROM the surface TOWARD the sun. Camera-independent.\n// Geometric face normals are required for receiver-plane filtering.\nuniform vec3 lightDirection;\nuniform vec3 lightRight;\nuniform vec3 lightUp;\nuniform float shadowPlaneScale;\nuniform highp sampler2DShadow shadowMap;\n\n// Change in normalized light depth per unit of shadow-map UV.\nvec2 cityPlaneSlope(vec3 surfaceNormal) {\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    lightFacing = (lightFacing < 0.0 ? -1.0 : 1.0) * max(abs(lightFacing), 1e-7);\n    return shadowPlaneScale * vec2(dot(surfaceNormal, lightRight), dot(surfaceNormal, lightUp)) /\n           lightFacing;\n}\n\nfloat cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {\n    // Opaque back-facing surfaces receive no direct sun. Raw visibility\n    // and surface illumination must both remain dark on these faces.\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    if (lightFacing <= 0.0) {\n        return 0.0;\n    }\n    vec3 shadowCoordinate = lightClipPosition.xyz / lightClipPosition.w * 0.5 + 0.5;\n    if (any(lessThan(shadowCoordinate, vec3(0))) || any(greaterThan(shadowCoordinate, vec3(1)))) {\n        return 1.0;\n    }\n    // Exact receiver plane in light space. Its slope is independent of the camera,\n    // and is not arbitrarily clamped at grazing incidence.\n    vec2 receiverSlope = cityPlaneSlope(surfaceNormal);\n    ivec2 shadowSize = textureSize(shadowMap, 0);\n    ivec2 baseTexel = ivec2(floor(shadowCoordinate.xy * vec2(shadowSize)));\n    // Comparison tolerance includes a depth-precision floor and a fraction of one\n    // world-space shadow texel. It is independent of camera distance/resolution.\n    float depthBias = 2.0 / 65535.0 + 0.125 * shadowPlaneScale / float(shadowSize.x);\n\n    // Separable quadratic B-spline weights across a 3x3 texel neighborhood.\n    // Compute each comparison at its texel center to avoid receiver-plane acne.\n    vec2 texelOffset = fract(shadowCoordinate.xy * vec2(shadowSize)) - 0.5;\n    vec3 weightsX = vec3(0.5 * (0.5 - texelOffset.x) * (0.5 - texelOffset.x),\n                         0.75 - texelOffset.x * texelOffset.x,\n                         0.5 * (0.5 + texelOffset.x) * (0.5 + texelOffset.x));\n    vec3 weightsY = vec3(0.5 * (0.5 - texelOffset.y) * (0.5 - texelOffset.y),\n                         0.75 - texelOffset.y * texelOffset.y,\n                         0.5 * (0.5 + texelOffset.y) * (0.5 + texelOffset.y));\n\n    float occlusion = 0.0;\n    for (int tapX = -1; tapX <= 1; tapX++) {\n        for (int tapY = -1; tapY <= 1; tapY++) {\n            ivec2 tapTexel = baseTexel + ivec2(tapX, tapY);\n            // Border taps are clear. Clamping would stretch an edge occluder outward.\n            if (any(lessThan(tapTexel, ivec2(0))) || any(greaterThanEqual(tapTexel, shadowSize))) {\n                continue;\n            }\n            vec2 tapUV = (vec2(tapTexel) + 0.5) / vec2(shadowSize);\n            // NEAREST samples this texel CENTER, not the unquantized requested UV.\n            float receiverDepth =\n                shadowCoordinate.z + dot(receiverSlope, tapUV - shadowCoordinate.xy);\n            // At grazing incidence a neighboring receiver-plane point can leave the\n            // light's depth volume even when the center pixel is inside it. Such a tap\n            // has no valid shadow information; comparing it with clear depth creates a\n            // false half-shadow and map-border patterns.\n            if (receiverDepth < 0.0 || receiverDepth > 1.0) {\n                continue;\n            }\n            // Compare in the depth texture unit; do not fetch/round depth into color math.\n            float visibility = textureLod(shadowMap, vec3(tapUV, receiverDepth - depthBias), 0.0);\n            occlusion += (1.0 - visibility) * weightsX[tapX + 1] * weightsY[tapY + 1];\n        }\n    }\n    // Summing occlusion preserves EXACTLY zero shadow on an unoccluded plane.\n    return 1.0 - (occlusion > 0.999999 ? 1.0 : clamp(occlusion, 0.0, 1.0));\n}\n\n// Shared by the city and sculpture. Matches Unity's default PaperStyle values.\n// Unit light intensity, zero ambient fill. Material ink is independent of light.\nfloat pencilSurfaceTone(float illumination, float materialInk) {\n    float darkness = 1.0 - clamp(illumination, 0.0, 1.0);\n    float tone = darkness * mix(0.38, 0.86, darkness);\n    return materialInk + (1.0 - materialInk) * tone;\n}\n\n\nfloat cityPencilTone(vec3 surfaceNormal, float sunVisibility, float material) {\n    float illumination = max(dot(normalize(surfaceNormal), lightDirection), 0.0) * sunVisibility;\n    // Dark facade details retain their material ink; walls, roofs and ground\n    // share the same surface illumination. Material IDs are not lighting modes.\n    float materialInk = material > 1.5 && material < 2.5 ? 0.70 : 0.0;\n    return pencilSurfaceTone(illumination, materialInk);\n}\n\n// PENCIL_CORE_INSERT\n\n// Pipeline: surface position -> sun visibility -> ink demand -> stroke coverage\n// -> paper contact. Shading methods: 0 pencil, 1 engraving, 2 fixed stripes.\nvoid main() {\n    // Reconstruct position and footprint together before evaluating the hatching.\n    vec3 positionDx;\n    vec3 positionDy;\n    vec3 surfacePosition = citySurfacePoint(worldNormal, planeDistance, positionDx, positionDy);\n    float sunVisibility =\n        cityShadowVisibility(lightProjection * vec4(surfacePosition, 1), worldNormal);\n    float tone = cityPencilTone(worldNormal, sunVisibility, materialId);\n\n    // Paper and roads retain their original base colors even without hatch ink.\n    float paperTooth = pnHash(floor(gl_FragCoord.xy / sampleScale));\n    vec3 paperColor = vec3(0.984, 0.978, 0.958) * (0.978 + 0.022 * paperTooth);\n    if (materialId > 3.5) {\n        paperColor *= 0.96;\n    }\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n    // Exit the FRAGMENT entry point, not only the nested hatch helper. This makes\n    // complete paper quads cheap even on backends that flatten helper branches.\n    if (tone <= 0.0) {\n        color = vec4(paperColor, 1);\n        return;\n    }\n    // Roofs share paper highlights; no decorative ink on fully lit surfaces.\n    // Two symmetric samples preserve the fine graphite coverage. Geometry uses\n    // native MSAA; outlines retain the original independent 2x metadata samples.\n    vec3 sampleOffset = fastSampling == 1 ? 0.25 * (positionDx + positionDy) : vec3(0.0);\n    float inkCoverage = pnPencil(surfacePosition - sampleOffset, worldNormal, positionDx,\n                                 positionDy, tone, drawing);\n    if (fastSampling == 1) {\n        inkCoverage = 0.5 * (inkCoverage + pnPencil(surfacePosition + sampleOffset, worldNormal,\n                                                    positionDx, positionDy, tone, drawing));\n    }\n\n    // Comparison modes reuse the same surface and its matching derivatives.\n    if (method > 0) {\n        vec2 chartPosition =\n            abs(worldNormal.y) > 0.8\n                ? surfacePosition.xz\n                : (abs(worldNormal.x) > 0.7 ? surfacePosition.zy : surfacePosition.xy);\n        float phase = dot(chartPosition, vec2(1, 0.6));\n        vec2 chartDx = abs(worldNormal.y) > 0.8\n                           ? positionDx.xz\n                           : (abs(worldNormal.x) > 0.7 ? positionDx.zy : positionDx.xy);\n        vec2 chartDy = abs(worldNormal.y) > 0.8\n                           ? positionDy.xz\n                           : (abs(worldNormal.x) > 0.7 ? positionDy.zy : positionDy.xy);\n        vec2 phaseGradient = vec2(dot(chartDx, vec2(1, 0.6)), dot(chartDy, vec2(1, 0.6)));\n        inkCoverage = method == 1 ? fhFamilyState(phase, phaseGradient, phaseGradient, tone, 7.0)\n                                  : fhStripe(phase * 32.0, tone,\n                                             (abs(phaseGradient.x) + abs(phaseGradient.y)) * 32.0);\n    }\n\n    // Paper contact affects light deposits more strongly than dense overlaps.\n    float paperFibre = pnNoise(gl_FragCoord.xy / sampleScale * vec2(0.13, 0.87));\n    inkCoverage *= mix(clamp(0.80 + 0.27 * paperTooth + 0.13 * paperFibre, 0.0, 1.0), 1.0,\n                       pow(inkCoverage, 3.0));\n    color = vec4(mix(paperColor, vec3(0.125, 0.119, 0.115), inkCoverage), 1);\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "raw": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float planeDistance;\nout vec4 color;\nuniform int debugView;\n// Pixel ray / geometric plane intersection (orthographic or perspective). The position and its\n// footprint come from the SAME mapping, independent of triangle raster snapping.\n// Camera basis and plane data are in world space. planeDistance = dot(surfaceNormal, surfacePosition).\n// worldPerPixel is constant for orbit views; for perspective it is the scale\n// at unit view depth. sampleScale converts supersample pixels to output pixels.\nuniform vec3 eye;\nuniform vec3 cameraRight;\nuniform vec3 cameraUp;\nuniform vec3 cameraForward;\nuniform vec2 resolution;\nuniform float worldPerPixel;\nuniform float sampleScale;\nuniform int cameraPerspective;\nuniform mat4 lightProjection;\n\nvec3 citySurfacePoint(vec3 surfaceNormal, float planeDistance, out vec3 positionDx,\n                      out vec3 positionDy) {\n    // Perspective: intersect the varying pixel ray with this face, then\n    // differentiate that same intersection with respect to screen x and y.\n    if (cameraPerspective == 1) {\n        vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n        vec3 pixelRay = cameraForward + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n        float rayPlaneDenominator = dot(surfaceNormal, pixelRay);\n        rayPlaneDenominator =\n            (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n        float viewDepth = (planeDistance - dot(surfaceNormal, eye)) / rayPlaneDenominator;\n        positionDx =\n            viewDepth * worldPerPixel *\n            (cameraRight - pixelRay * dot(surfaceNormal, cameraRight) / rayPlaneDenominator);\n        positionDy = viewDepth * worldPerPixel *\n                     (cameraUp - pixelRay * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n        return eye + pixelRay * viewDepth;\n    }\n\n    // Orthographic: every ray has the same direction and a different origin.\n    float rayPlaneDenominator = dot(surfaceNormal, cameraForward);\n    rayPlaneDenominator =\n        (rayPlaneDenominator < 0.0 ? -1.0 : 1.0) * max(abs(rayPlaneDenominator), 1e-7);\n    vec2 screenOffset = (gl_FragCoord.xy / sampleScale - resolution * 0.5) * worldPerPixel;\n    vec3 rayOrigin = eye + cameraRight * screenOffset.x + cameraUp * screenOffset.y;\n    positionDx = worldPerPixel * (cameraRight - cameraForward * dot(surfaceNormal, cameraRight) /\n                                                    rayPlaneDenominator);\n    positionDy = worldPerPixel *\n                 (cameraUp - cameraForward * dot(surfaceNormal, cameraUp) / rayPlaneDenominator);\n    return rayOrigin +\n           cameraForward * ((planeDistance - dot(surfaceNormal, rayOrigin)) / rayPlaneDenominator);\n}\n\n// Light direction points FROM the surface TOWARD the sun. Camera-independent.\n// Geometric face normals are required for receiver-plane filtering.\nuniform vec3 lightDirection;\nuniform vec3 lightRight;\nuniform vec3 lightUp;\nuniform float shadowPlaneScale;\nuniform highp sampler2DShadow shadowMap;\n\n// Change in normalized light depth per unit of shadow-map UV.\nvec2 cityPlaneSlope(vec3 surfaceNormal) {\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    lightFacing = (lightFacing < 0.0 ? -1.0 : 1.0) * max(abs(lightFacing), 1e-7);\n    return shadowPlaneScale * vec2(dot(surfaceNormal, lightRight), dot(surfaceNormal, lightUp)) /\n           lightFacing;\n}\n\nfloat cityShadowVisibility(vec4 lightClipPosition, vec3 surfaceNormal) {\n    // Opaque back-facing surfaces receive no direct sun. Raw visibility\n    // and surface illumination must both remain dark on these faces.\n    float lightFacing = dot(surfaceNormal, lightDirection);\n    if (lightFacing <= 0.0) {\n        return 0.0;\n    }\n    vec3 shadowCoordinate = lightClipPosition.xyz / lightClipPosition.w * 0.5 + 0.5;\n    if (any(lessThan(shadowCoordinate, vec3(0))) || any(greaterThan(shadowCoordinate, vec3(1)))) {\n        return 1.0;\n    }\n    // Exact receiver plane in light space. Its slope is independent of the camera,\n    // and is not arbitrarily clamped at grazing incidence.\n    vec2 receiverSlope = cityPlaneSlope(surfaceNormal);\n    ivec2 shadowSize = textureSize(shadowMap, 0);\n    ivec2 baseTexel = ivec2(floor(shadowCoordinate.xy * vec2(shadowSize)));\n    // Comparison tolerance includes a depth-precision floor and a fraction of one\n    // world-space shadow texel. It is independent of camera distance/resolution.\n    float depthBias = 2.0 / 65535.0 + 0.125 * shadowPlaneScale / float(shadowSize.x);\n\n    // Separable quadratic B-spline weights across a 3x3 texel neighborhood.\n    // Compute each comparison at its texel center to avoid receiver-plane acne.\n    vec2 texelOffset = fract(shadowCoordinate.xy * vec2(shadowSize)) - 0.5;\n    vec3 weightsX = vec3(0.5 * (0.5 - texelOffset.x) * (0.5 - texelOffset.x),\n                         0.75 - texelOffset.x * texelOffset.x,\n                         0.5 * (0.5 + texelOffset.x) * (0.5 + texelOffset.x));\n    vec3 weightsY = vec3(0.5 * (0.5 - texelOffset.y) * (0.5 - texelOffset.y),\n                         0.75 - texelOffset.y * texelOffset.y,\n                         0.5 * (0.5 + texelOffset.y) * (0.5 + texelOffset.y));\n\n    float occlusion = 0.0;\n    for (int tapX = -1; tapX <= 1; tapX++) {\n        for (int tapY = -1; tapY <= 1; tapY++) {\n            ivec2 tapTexel = baseTexel + ivec2(tapX, tapY);\n            // Border taps are clear. Clamping would stretch an edge occluder outward.\n            if (any(lessThan(tapTexel, ivec2(0))) || any(greaterThanEqual(tapTexel, shadowSize))) {\n                continue;\n            }\n            vec2 tapUV = (vec2(tapTexel) + 0.5) / vec2(shadowSize);\n            // NEAREST samples this texel CENTER, not the unquantized requested UV.\n            float receiverDepth =\n                shadowCoordinate.z + dot(receiverSlope, tapUV - shadowCoordinate.xy);\n            // At grazing incidence a neighboring receiver-plane point can leave the\n            // light's depth volume even when the center pixel is inside it. Such a tap\n            // has no valid shadow information; comparing it with clear depth creates a\n            // false half-shadow and map-border patterns.\n            if (receiverDepth < 0.0 || receiverDepth > 1.0) {\n                continue;\n            }\n            // Compare in the depth texture unit; do not fetch/round depth into color math.\n            float visibility = textureLod(shadowMap, vec3(tapUV, receiverDepth - depthBias), 0.0);\n            occlusion += (1.0 - visibility) * weightsX[tapX + 1] * weightsY[tapY + 1];\n        }\n    }\n    // Summing occlusion preserves EXACTLY zero shadow on an unoccluded plane.\n    return 1.0 - (occlusion > 0.999999 ? 1.0 : clamp(occlusion, 0.0, 1.0));\n}\n\n// Shared by the city and sculpture. Matches Unity's default PaperStyle values.\n// Unit light intensity, zero ambient fill. Material ink is independent of light.\nfloat pencilSurfaceTone(float illumination, float materialInk) {\n    float darkness = 1.0 - clamp(illumination, 0.0, 1.0);\n    float tone = darkness * mix(0.38, 0.86, darkness);\n    return materialInk + (1.0 - materialInk) * tone;\n}\n\n\nfloat cityPencilTone(vec3 surfaceNormal, float sunVisibility, float material) {\n    float illumination = max(dot(normalize(surfaceNormal), lightDirection), 0.0) * sunVisibility;\n    // Dark facade details retain their material ink; walls, roofs and ground\n    // share the same surface illumination. Material IDs are not lighting modes.\n    float materialInk = material > 1.5 && material < 2.5 ? 0.70 : 0.0;\n    return pencilSurfaceTone(illumination, materialInk);\n}\n\nvoid main() {\n    if (debugView == 2) {\n        color = vec4(vec3(max(dot(worldNormal, lightDirection), 0.0)), 1);\n        return;\n    }\n    vec3 positionDx;\n    vec3 positionDy;\n    vec3 surfacePosition = citySurfacePoint(worldNormal, planeDistance, positionDx, positionDy);\n    color = vec4(\n        vec3(cityShadowVisibility(lightProjection * vec4(surfacePosition, 1), worldNormal)), 1);\n}\n", "metadata": "#version 300 es\nprecision highp float;\nin vec3 worldNormal;\nflat in float materialId;\nlayout(location = 1) out vec4 meta;\nvoid main() {\n    meta = vec4(worldNormal * 0.5 + 0.5, materialId * 0.25);\n}\n", "fullscreen": "#version 300 es\n// A single oversized triangle covers the viewport without a shared diagonal.\nvoid main() {\n    vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n    gl_Position = vec4(corner * 2.0 - 1.0, 0, 1);\n}\n"};
 // Rasterized city + shadow map + screen-space depth/normal outline fitting.
 // No dependencies. The outline passes have no access to mesh edges or IDs.
 function createPencilCity(
@@ -1891,23 +1917,6 @@ function createPencilCity(
       0, 0, (far + near) / (near - far), -1,
       0, 0, 2 * far * near / (near - far), 0];
   }
-  // Clip the ground shadow rectangle before perspective division. Corners
-  // behind the walking camera must not invert or erase its screen bounds.
-  function groundScreenBounds(vp, bounds, near) {
-    const [x0, z0, x1, z1] = bounds;
-    const polygon = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([x, z]) =>
-      [0, 1, 3].map(i => vp[i] * x - vp[4 + i] * .01 + vp[8 + i] * z + vp[12 + i]));
-    const clipped = [];
-    for (let i = 0; i < polygon.length; i++) {
-      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
-      if (a[2] >= near) clipped.push(a);
-      if ((a[2] >= near) !== (b[2] >= near)) {
-        const t = (near - a[2]) / (b[2] - a[2]);
-        clipped.push(a.map((v, j) => v + t * (b[j] - v)));
-      }
-    }
-    return clipped.map(p => [p[0] / p[2] * .5 + .5, p[1] / p[2] * .5 + .5]);
-  }
   function mul(a, b) {
     let c = Array(16).fill(0);
     for (let j = 0; j < 4; j++)
@@ -1967,7 +1976,7 @@ function createPencilCity(
     [2, 1, 6],
   ]);
   const grouped = {};
-  for (let i = 42; i < vertices.length; i += 21) {
+  for (let i = 0; i < vertices.length; i += 21) {
     const mask =
       vertices[i + 6] >= 16
         ? 7
@@ -1988,7 +1997,6 @@ function createPencilCity(
         [2, 1, 6],
       ]),
     }));
-  let groundBounds = null;
   // Shader text comes from src/shaders/. build.py resolves its includes once;
   // the caller supplies the pencil kernel used by both the demo and fixtures.
   const withPencil = source => source.replace("// PENCIL_CORE_INSERT", pencilCore);
@@ -1996,7 +2004,6 @@ function createPencilCity(
   const depth = program(vertex, CITY_SHADERS.depth);
   const shadowDepth = program(CITY_SHADERS.shadowVertex, CITY_SHADERS.depth);
   const fillSource = withPencil(CITY_SHADERS.fill);
-  const paperProgram = program(vertex, withPencil(CITY_SHADERS.paper));
   const rawProgram = program(vertex, CITY_SHADERS.raw);
   const metadataProgram = program(vertex, CITY_SHADERS.metadata);
   const fullscreen = CITY_SHADERS.fullscreen;
@@ -2051,7 +2058,6 @@ function createPencilCity(
     batch.uniforms = locations(batch.program);
   }
   const ru = locations(rawProgram),
-    gu = locations(paperProgram),
     mu = locations(metadataProgram),
     du = locations(depth),
     su = locations(shadowDepth),
@@ -2097,8 +2103,7 @@ function createPencilCity(
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   let buffers = null,
     lastPost = null,
-    lastLight = null,
-    lastGroundLight = null;
+    lastLight = null;
   const colorSamples = Array.from(
     gl.getInternalformatParameter(gl.RENDERBUFFER, gl.RGBA8, gl.SAMPLES),
   );
@@ -2333,36 +2338,6 @@ function createPencilCity(
       lightView,
     );
     const trafficTime = extended ? state.trafficTime || 0 : 0;
-    if (lastGroundLight !== state.light) {
-      lastGroundLight = state.light;
-      let minX = Infinity,
-        maxX = -Infinity,
-        minZ = Infinity,
-        maxZ = -Infinity;
-      // Project every caster vertex onto the ground. Outside this conservative
-      // rectangle (+ filter margin) ground is provably unshadowed paper.
-      for (let i = 42; i < vertices.length; i += 7) {
-        if (vertices[i + 6] >= 16) continue;
-        let h = vertices[i + 1] + 0.01,
-          x = vertices[i] - (h * light[0]) / light[1],
-          z = vertices[i + 2] - (h * light[2]) / light[1];
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minZ = Math.min(minZ, z);
-        maxZ = Math.max(maxZ, z);
-      }
-      if (extended) {
-        minX = Math.min(minX, -4.85 - (0.5 * light[0]) / light[1]);
-        maxX = Math.max(maxX, 4.85 - (0.5 * light[0]) / light[1]);
-        minZ = Math.min(minZ, -4.25 - (0.5 * light[2]) / light[1]);
-        maxZ = Math.max(maxZ, 4.25 - (0.5 * light[2]) / light[1]);
-      }
-      minX -= 0.06;
-      maxX += 0.06;
-      minZ -= 0.06;
-      maxZ += 0.06;
-      groundBounds = [minX, minZ, maxX, maxZ];
-    }
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     gl.depthMask(true);
@@ -2470,60 +2445,7 @@ function createPencilCity(
       bindTexture(shadowTexture, 0, ru.shadowMap);
       gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 7);
     } else {
-      stats.lastPass = "unshadowed ground";
-      gl.useProgram(paperProgram);
-      gl.uniformMatrix4fv(gu.viewProjection, false, vp);
-      gl.uniform1f(gu.sampleScale, scaleFactor);
-      gl.bindVertexArray(mesh);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      const groundShader = batches.find((b) => b.kind === "2");
-      for (const batch of [
-        ...batches,
-        { ...groundShader, mesh, count: 6, isGround: true },
-      ]) {
-        if (batch.isGround) {
-          // Clip pixels, not the plane mesh. Re-triangulating the ground changed
-          // rasterized depth as the camera rotated, making whole shadows vanish.
-          const coords = groundScreenBounds(vp, groundBounds, walking ? .03 : .1);
-          if (!coords.length) continue;
-          const sw = w * scaleFactor,
-            sh = h * scaleFactor;
-          const left = Math.max(
-              0,
-              Math.min(
-                sw,
-                Math.floor(Math.min(...coords.map((p) => p[0])) * sw) - 2,
-              ),
-            ),
-            right = Math.max(
-              0,
-              Math.min(
-                sw,
-                Math.ceil(Math.max(...coords.map((p) => p[0])) * sw) + 2,
-              ),
-            );
-          const bottom = Math.max(
-              0,
-              Math.min(
-                sh,
-                Math.floor(Math.min(...coords.map((p) => p[1])) * sh) - 2,
-              ),
-            ),
-            top = Math.max(
-              0,
-              Math.min(
-                sh,
-                Math.ceil(Math.max(...coords.map((p) => p[1])) * sh) + 2,
-              ),
-            );
-          gl.enable(gl.SCISSOR_TEST);
-          gl.scissor(
-            left,
-            bottom,
-            Math.max(0, right - left),
-            Math.max(0, top - bottom),
-          );
-        }
+      for (const batch of batches) {
         const fu = batch.uniforms;
         stats.lastPass = "pencil " + batch.kind;
         gl.useProgram(batch.program);
@@ -2552,7 +2474,6 @@ function createPencilCity(
         gl.uniform1i(fu.method, state.method);
         bindTexture(shadowTexture, 0, fu.shadowMap);
         gl.drawArrays(gl.TRIANGLES, 0, batch.count);
-        if (batch.isGround) gl.disable(gl.SCISSOR_TEST);
       }
     }
     gl.depthMask(true);
@@ -2638,7 +2559,7 @@ function createPencilCity(
   };
 }
 
-// Ground-level camera and input only. Rendering remains on the held drawing clock.
+// Ground-level camera and input. Movement requests an immediate animation-frame redraw.
 function createPencilWalk(canvas, panel, changed) {
   const obstacles = [];
   buildPencilCityGeometry(true, false, obstacles);
@@ -2869,9 +2790,6 @@ function createPencilWalk(canvas, panel, changed) {
       "lightAngle",
       "spacing",
       "orbit",
-      "heldOrbit",
-      "heldZoom",
-      "heldLight",
       "pan",
       "scene",
       "method",
@@ -2885,32 +2803,16 @@ function createPencilWalk(canvas, panel, changed) {
     pitch = +controls.scene.value >= 3 ? 0.52 : 0.25,
     pan = [0.0, 0.0],
     pending = false;
-  let held = {
-      yaw,
-      pitch,
-      zoom: 0,
-      light: 0.35,
-      pan: [0, 0],
-      scene: 3,
-      method: 0,
-      outline: 2,
-      jitter: 0.65,
-      quality: 1,
-      view: 0,
-      trafficTime: 0,
-    },
-    lastInkTick = -Infinity,
-    settleTimer = 0;
+  let state = null;
   let trafficClock = 0,
     trafficLast = performance.now();
-  let frameSeed = 0,
-    rendered = false;
+  const frameSeed = 0;
+  let rendered = false;
   let animationStart = null,
     animationLight = 0,
     animationFrame = 0,
     animationKind = "light",
     animationZoom = 0;
-  const tickTimes = [];
   const walker = createPencilWalk(canvas, root.querySelector('[data-walk-panel]'), requestDraw);
   function updateNavigation() {
     const walking = +controls.scene.value === 5;
@@ -2931,8 +2833,6 @@ function createPencilWalk(canvas, panel, changed) {
   document.addEventListener("DOMContentLoaded", updateNavigation, { once: true });
   function draw() {
     pending = false;
-    const now = performance.now();
-    let committed = false;
     const requested = {
       yaw,
       pitch,
@@ -2946,31 +2846,10 @@ function createPencilWalk(canvas, panel, changed) {
       jitter: +controls.jitter.value,
       quality: +controls.quality.value,
       view: +controls.view.value,
-      trafficTime: Math.floor(trafficClock * 10) / 10,
+      trafficTime: trafficClock,
     };
-    const dirty = JSON.stringify(held) !== JSON.stringify(requested);
-    if (!controls.hold.checked || now - lastInkTick >= 100) {
-      if (dirty || lastInkTick === -Infinity) {
-        // Relighting and orbiting change the image, not the identity of a mark.
-        // Retain the requested fresh held drawings specifically while zooming.
-        const redraw =
-          held.zoom !== requested.zoom || held.scene !== requested.scene;
-        held = requested;
-        committed = true;
-        if ((redraw || !rendered) && controls.hold.checked) frameSeed++;
-        lastInkTick = now;
-        tickTimes.push(now);
-        if (tickTimes.length > 200) tickTimes.shift();
-      }
-    } else if (dirty && !settleTimer) {
-      settleTimer = setTimeout(
-        () => {
-          settleTimer = 0;
-          requestDraw();
-        },
-        Math.max(1, 101 - (now - lastInkTick)),
-      );
-    }
+    const dirty = JSON.stringify(state) !== JSON.stringify(requested);
+    state = requested;
     const w = Math.max(1, Math.round(canvas.clientWidth)),
       h = Math.max(1, Math.round(canvas.clientHeight));
     // One framebuffer pixel per CSS pixel makes the spacing control consistent.
@@ -2979,9 +2858,9 @@ function createPencilWalk(canvas, panel, changed) {
       canvas.width = w;
       canvas.height = h;
     }
-    if (committed || resized || !rendered) {
-      if (held.scene >= 3) {
-        if (held.scene >= 4 && !extendedRenderer)
+    if (dirty || resized || !rendered) {
+      if (state.scene >= 3) {
+        if (state.scene >= 4 && !extendedRenderer)
           extendedRenderer = createPencilCity(
             gl,
             root.querySelector("[data-pencil-core]").textContent.trim(),
@@ -2989,8 +2868,8 @@ function createPencilWalk(canvas, panel, changed) {
             root.querySelector("[data-composite-fragment]").textContent.trim(),
             true,
           );
-        (held.scene >= 4 ? extendedRenderer : cityRenderer).draw(
-          held,
+        (state.scene >= 4 ? extendedRenderer : cityRenderer).draw(
+          state,
           w,
           h,
           frameSeed,
@@ -2999,16 +2878,13 @@ function createPencilWalk(canvas, panel, changed) {
         gl.viewport(0, 0, w, h);
         gl.useProgram(program);
         gl.uniform2f(uniforms.resolution, w, h);
-        gl.uniform1f(uniforms.zoomStops, held.zoom);
-        gl.uniform1f(uniforms.lightAngle, held.light);
+        gl.uniform1f(uniforms.zoomStops, state.zoom);
+        gl.uniform1f(uniforms.lightAngle, state.light);
         gl.uniform1f(uniforms.spacing, 7.0);
-        gl.uniform2f(uniforms.orbit, held.yaw, held.pitch);
-        gl.uniform2f(uniforms.heldOrbit, held.yaw, held.pitch);
-        gl.uniform1f(uniforms.heldZoom, held.zoom);
-        gl.uniform1f(uniforms.heldLight, held.light);
-        gl.uniform2fv(uniforms.pan, held.pan);
-        gl.uniform1i(uniforms.scene, held.scene);
-        gl.uniform1i(uniforms.method, held.method);
+        gl.uniform2f(uniforms.orbit, state.yaw, state.pitch);
+        gl.uniform2fv(uniforms.pan, state.pan);
+        gl.uniform1i(uniforms.scene, state.scene);
+        gl.uniform1i(uniforms.method, state.method);
         gl.uniform1i(uniforms.flow, 1);
         gl.uniform1f(uniforms.frameSeed, frameSeed);
         // Graphite and paper are physical artwork materials, not inverted UI colors.
@@ -3044,9 +2920,7 @@ function createPencilWalk(canvas, panel, changed) {
       ? +controls.view.value === 2
         ? "Light only · no cast shadows"
         : "Raw shadows · white: sunlit · black: shaded"
-      : (controls.hold.checked
-          ? "10 fps max · "
-          : "Continuous · ") +
+      : "Continuous · " +
         [
           "drag to orbit",
           "drag to pan",
@@ -3078,11 +2952,9 @@ function createPencilWalk(canvas, panel, changed) {
     pitch = +controls.scene.value >= 3 ? 0.52 : 0.25;
     requestDraw();
   });
-  // Traffic alone does not reseed the stationary buildings' pencil drawing. Quantized
-  // time drives every pass together; pausing or hiding the page stops movement.
-  setInterval(() => {
-    const now = performance.now(),
-      dt = Math.min(0.3, Math.max(0, (now - trafficLast) / 1000));
+  // Traffic uses continuous frame time and never changes the stationary stroke seed.
+  function animateTraffic(now) {
+    const dt = Math.min(0.3, Math.max(0, (now - trafficLast) / 1000));
     trafficLast = now;
     if (
       +controls.scene.value >= 4 &&
@@ -3092,7 +2964,9 @@ function createPencilWalk(canvas, panel, changed) {
       trafficClock += dt;
       requestDraw();
     }
-  }, 100);
+    requestAnimationFrame(animateTraffic);
+  }
+  requestAnimationFrame(animateTraffic);
   function play(kind) {
     if (kind === "zoom" && +controls.scene.value === 5 && animationStart === null) return;
     const buttons = [...root.querySelectorAll("[data-play-kind]")];
@@ -3185,7 +3059,7 @@ function createPencilWalk(canvas, panel, changed) {
   root.fractalDemo = {
     draw,
     get cityRenderer() {
-      return held.scene >= 4 ? extendedRenderer : cityRenderer;
+      return state.scene >= 4 ? extendedRenderer : cityRenderer;
     },
     setCamera: (y, p) => {
       yaw = y;
@@ -3193,8 +3067,7 @@ function createPencilWalk(canvas, panel, changed) {
       draw();
     },
     gl,
-    tickTimes,
-    getHeld: () => ({ ...held }),
+    getState: () => ({ ...state }),
     getFrameSeed: () => frameSeed,
   };
   draw();

@@ -29,7 +29,7 @@ def shader_source(filename, stack=()):
 
 def build():
     core = read(SHADERS / "FractalHatching.glsl") + "\n" + read(SHADERS / "PencilHatching.glsl")
-    scene = read(SHADERS / "scene.frag").replace("// CORE_INSERT", core)
+    scene = shader_source("scene.frag").replace("// CORE_INSERT", core)
     composite = read(SHADERS / "outline-composite.frag").replace("// CORE_INSERT", core)
     composite = composite.replace("// OUTLINE_CORE_INSERT", read(SHADERS / "PencilOutline.glsl"))
     city_sources = {
@@ -39,7 +39,6 @@ def build():
             "shadowVertex": "city-shadow.vert",
             "depth": "depth-only.frag",
             "fill": "city-fill.frag",
-            "paper": "city-paper.frag",
             "raw": "city-raw.frag",
             "metadata": "city-metadata.frag",
             "fullscreen": "fullscreen.vert",

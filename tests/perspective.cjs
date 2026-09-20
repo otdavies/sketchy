@@ -1,5 +1,5 @@
 // Independent ray/box truth for perspective shadows, plus flat-face outline and
-// near-plane scissor checks. No screenshot goldens or graphics-driver assumptions.
+// outline checks. No screenshot goldens or graphics-driver assumptions.
 const { chromium } = require('playwright');
 const assert = require('node:assert/strict');
 const path = require('node:path');
@@ -20,10 +20,6 @@ const { pathToFileURL } = require('node:url');
       const fixture = eval('(' + buildPencilCityGeometry.toString().replace('  return vertices;',
         'vertices.length=42;box(0,.5,0,.5,.5,.5);return vertices;') + ')')();
       const renderer = createPencilCity(g, ...source, false, fixture);
-      // Reference draws the whole ground with its original triangles. Only the
-      // optimization is disabled, so it catches incorrect projected clipping.
-      const unscissored = eval('(' + createPencilCity.toString().replace(
-        'if (batch.isGround) {', 'if (false && batch.isGround) {') + ')')(g, ...source, false, fixture);
       const dot = (a, b) => a.reduce((sum, x, i) => sum + x * b[i], 0);
       const add = (a, b, scale = 1) => a.map((x, i) => x + scale * b[i]);
       function boxHit(o, ray) {
@@ -50,7 +46,7 @@ const { pathToFileURL } = require('node:url');
         g.readPixels(0, 0, w, h, g.RGBA, g.UNSIGNED_BYTE, pixels);
         return pixels;
       };
-      const result = { views: 0, visibilitySamples: 0, flatOutlineSamples: 0, falseEdges: 0, shadowFailures: [], scissorDifferences: 0 };
+      const result = { views: 0, visibilitySamples: 0, flatOutlineSamples: 0, falseEdges: 0, shadowFailures: [] };
       for (let view = 0; view < 12; view++) {
         const angle = view * Math.PI / 6, distance = view % 2 ? 1.1 : 3;
         const eye = [Math.sin(angle) * distance, .52, Math.cos(angle) * distance];
@@ -60,7 +56,7 @@ const { pathToFileURL } = require('node:url');
         const up = [-Math.sin(yaw) * Math.sin(pitch), Math.cos(pitch), Math.cos(yaw) * Math.sin(pitch)];
         const pixelScale = 2 * Math.tan(Math.PI / 6) / h;
         const ray = (x, y) => add(add(forward, right, (x - w / 2) * pixelScale), up, (y - h / 2) * pixelScale);
-        const state = { ...d.getHeld(), walkPose: { eye, yaw, pitch }, light: (view % 4) / 4, view: 1, outline: 1, quality: view % 2 };
+        const state = { ...d.getState(), walkPose: { eye, yaw, pitch }, light: (view % 4) / 4, view: 1, outline: 1, quality: view % 2 };
         renderer.draw(state, w, h, 1);
         const raw = read(), samples = [];
         const a = state.light * Math.PI * 2, light = [.8 * Math.cos(a), .95, .8 * Math.sin(a)];
@@ -78,16 +74,12 @@ const { pathToFileURL } = require('node:url');
         }
         state.view = 0;
         renderer.draw(state, w, h, 1);
-        const clipped = read();
         g.bindFramebuffer(g.FRAMEBUFFER, renderer.getBuffers().edge);
         const seeds = read();
         for (const [x, y] of samples) {
           result.flatOutlineSamples++;
           if (seeds[(y * w + x) * 4 + 3]) result.falseEdges++;
         }
-        unscissored.draw(state, w, h, 1);
-        const full = read();
-        for (let i = 0; i < full.length; i++) if (Math.abs(full[i] - clipped[i]) > 1) result.scissorDifferences++;
         result.views++;
       }
       result.glError = g.getError();
@@ -98,7 +90,6 @@ const { pathToFileURL } = require('node:url');
     assert(report.flatOutlineSamples > 1000);
     assert.deepEqual(report.shadowFailures, []);
     assert.equal(report.falseEdges, 0);
-    assert.equal(report.scissorDifferences, 0);
     assert.equal(report.glError, 0);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }

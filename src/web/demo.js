@@ -82,9 +82,6 @@
       "lightAngle",
       "spacing",
       "orbit",
-      "heldOrbit",
-      "heldZoom",
-      "heldLight",
       "pan",
       "scene",
       "method",
@@ -98,32 +95,16 @@
     pitch = +controls.scene.value >= 3 ? 0.52 : 0.25,
     pan = [0.0, 0.0],
     pending = false;
-  let held = {
-      yaw,
-      pitch,
-      zoom: 0,
-      light: 0.35,
-      pan: [0, 0],
-      scene: 3,
-      method: 0,
-      outline: 2,
-      jitter: 0.65,
-      quality: 1,
-      view: 0,
-      trafficTime: 0,
-    },
-    lastInkTick = -Infinity,
-    settleTimer = 0;
+  let state = null;
   let trafficClock = 0,
     trafficLast = performance.now();
-  let frameSeed = 0,
-    rendered = false;
+  const frameSeed = 0;
+  let rendered = false;
   let animationStart = null,
     animationLight = 0,
     animationFrame = 0,
     animationKind = "light",
     animationZoom = 0;
-  const tickTimes = [];
   const walker = createPencilWalk(canvas, root.querySelector('[data-walk-panel]'), requestDraw);
   function updateNavigation() {
     const walking = +controls.scene.value === 5;
@@ -144,8 +125,6 @@
   document.addEventListener("DOMContentLoaded", updateNavigation, { once: true });
   function draw() {
     pending = false;
-    const now = performance.now();
-    let committed = false;
     const requested = {
       yaw,
       pitch,
@@ -159,31 +138,10 @@
       jitter: +controls.jitter.value,
       quality: +controls.quality.value,
       view: +controls.view.value,
-      trafficTime: Math.floor(trafficClock * 10) / 10,
+      trafficTime: trafficClock,
     };
-    const dirty = JSON.stringify(held) !== JSON.stringify(requested);
-    if (!controls.hold.checked || now - lastInkTick >= 100) {
-      if (dirty || lastInkTick === -Infinity) {
-        // Relighting and orbiting change the image, not the identity of a mark.
-        // Retain the requested fresh held drawings specifically while zooming.
-        const redraw =
-          held.zoom !== requested.zoom || held.scene !== requested.scene;
-        held = requested;
-        committed = true;
-        if ((redraw || !rendered) && controls.hold.checked) frameSeed++;
-        lastInkTick = now;
-        tickTimes.push(now);
-        if (tickTimes.length > 200) tickTimes.shift();
-      }
-    } else if (dirty && !settleTimer) {
-      settleTimer = setTimeout(
-        () => {
-          settleTimer = 0;
-          requestDraw();
-        },
-        Math.max(1, 101 - (now - lastInkTick)),
-      );
-    }
+    const dirty = JSON.stringify(state) !== JSON.stringify(requested);
+    state = requested;
     const w = Math.max(1, Math.round(canvas.clientWidth)),
       h = Math.max(1, Math.round(canvas.clientHeight));
     // One framebuffer pixel per CSS pixel makes the spacing control consistent.
@@ -192,9 +150,9 @@
       canvas.width = w;
       canvas.height = h;
     }
-    if (committed || resized || !rendered) {
-      if (held.scene >= 3) {
-        if (held.scene >= 4 && !extendedRenderer)
+    if (dirty || resized || !rendered) {
+      if (state.scene >= 3) {
+        if (state.scene >= 4 && !extendedRenderer)
           extendedRenderer = createPencilCity(
             gl,
             root.querySelector("[data-pencil-core]").textContent.trim(),
@@ -202,8 +160,8 @@
             root.querySelector("[data-composite-fragment]").textContent.trim(),
             true,
           );
-        (held.scene >= 4 ? extendedRenderer : cityRenderer).draw(
-          held,
+        (state.scene >= 4 ? extendedRenderer : cityRenderer).draw(
+          state,
           w,
           h,
           frameSeed,
@@ -212,16 +170,13 @@
         gl.viewport(0, 0, w, h);
         gl.useProgram(program);
         gl.uniform2f(uniforms.resolution, w, h);
-        gl.uniform1f(uniforms.zoomStops, held.zoom);
-        gl.uniform1f(uniforms.lightAngle, held.light);
+        gl.uniform1f(uniforms.zoomStops, state.zoom);
+        gl.uniform1f(uniforms.lightAngle, state.light);
         gl.uniform1f(uniforms.spacing, 7.0);
-        gl.uniform2f(uniforms.orbit, held.yaw, held.pitch);
-        gl.uniform2f(uniforms.heldOrbit, held.yaw, held.pitch);
-        gl.uniform1f(uniforms.heldZoom, held.zoom);
-        gl.uniform1f(uniforms.heldLight, held.light);
-        gl.uniform2fv(uniforms.pan, held.pan);
-        gl.uniform1i(uniforms.scene, held.scene);
-        gl.uniform1i(uniforms.method, held.method);
+        gl.uniform2f(uniforms.orbit, state.yaw, state.pitch);
+        gl.uniform2fv(uniforms.pan, state.pan);
+        gl.uniform1i(uniforms.scene, state.scene);
+        gl.uniform1i(uniforms.method, state.method);
         gl.uniform1i(uniforms.flow, 1);
         gl.uniform1f(uniforms.frameSeed, frameSeed);
         // Graphite and paper are physical artwork materials, not inverted UI colors.
@@ -257,9 +212,7 @@
       ? +controls.view.value === 2
         ? "Light only · no cast shadows"
         : "Raw shadows · white: sunlit · black: shaded"
-      : (controls.hold.checked
-          ? "10 fps max · "
-          : "Continuous · ") +
+      : "Continuous · " +
         [
           "drag to orbit",
           "drag to pan",
@@ -291,11 +244,9 @@
     pitch = +controls.scene.value >= 3 ? 0.52 : 0.25;
     requestDraw();
   });
-  // Traffic alone does not reseed the stationary buildings' pencil drawing. Quantized
-  // time drives every pass together; pausing or hiding the page stops movement.
-  setInterval(() => {
-    const now = performance.now(),
-      dt = Math.min(0.3, Math.max(0, (now - trafficLast) / 1000));
+  // Traffic uses continuous frame time and never changes the stationary stroke seed.
+  function animateTraffic(now) {
+    const dt = Math.min(0.3, Math.max(0, (now - trafficLast) / 1000));
     trafficLast = now;
     if (
       +controls.scene.value >= 4 &&
@@ -305,7 +256,9 @@
       trafficClock += dt;
       requestDraw();
     }
-  }, 100);
+    requestAnimationFrame(animateTraffic);
+  }
+  requestAnimationFrame(animateTraffic);
   function play(kind) {
     if (kind === "zoom" && +controls.scene.value === 5 && animationStart === null) return;
     const buttons = [...root.querySelectorAll("[data-play-kind]")];
@@ -398,7 +351,7 @@
   root.fractalDemo = {
     draw,
     get cityRenderer() {
-      return held.scene >= 4 ? extendedRenderer : cityRenderer;
+      return state.scene >= 4 ? extendedRenderer : cityRenderer;
     },
     setCamera: (y, p) => {
       yaw = y;
@@ -406,8 +359,7 @@
       draw();
     },
     gl,
-    tickTimes,
-    getHeld: () => ({ ...held }),
+    getState: () => ({ ...state }),
     getFrameSeed: () => frameSeed,
   };
   draw();

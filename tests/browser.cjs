@@ -1,4 +1,4 @@
-// Integration evidence: actual controls, held output, pencil wiggle and diagnostics.
+// Integration evidence: immediate updates, stable strokes, pencil wiggle and diagnostics.
 const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -46,19 +46,14 @@ const { pathToFileURL } = require("node:url");
         const initial = read(),
           seed = demo.getFrameSeed();
         c("zoom").value = ".4";
-        // First settle to establish a precisely controlled drawing tick.
         demo.draw();
         const settled = read(),
           settledSeed = demo.getFrameSeed();
         c("zoom").value = ".6";
-        now += 30;
+        now += 1;
         demo.draw();
-        const heldBetweenTicks =
-          read() === settled && demo.getFrameSeed() === settledSeed;
-        now += 80;
-        demo.draw();
-        const discreteZoomRedraw =
-          read() !== settled && demo.getFrameSeed() === settledSeed + 1;
+        const immediateZoomRedraw =
+          read() !== settled && demo.getFrameSeed() === settledSeed;
         const zoomSeed = demo.getFrameSeed();
         commit({ light: 0.7 });
         now += 110;
@@ -66,7 +61,7 @@ const { pathToFileURL } = require("node:url");
         const motionPreservesSeed = demo.getFrameSeed() === zoomSeed;
         // A fixed texture comparison has no drawing-seed input: only outlines vary.
         const renderer = demo.cityRenderer;
-        const state = { ...demo.getHeld(), method: 2, outline: 2 };
+        const state = { ...demo.getState(), method: 2, outline: 2 };
         renderer.draw(state, gl.canvas.width, gl.canvas.height, 4);
         const pencilA = read();
         renderer.draw(state, gl.canvas.width, gl.canvas.height, 5);
@@ -124,8 +119,7 @@ const { pathToFileURL } = require("node:url");
         commit({ scene: 3, quality: 0 });
         return {
           defaultPencilFit,
-          heldBetweenTicks,
-          discreteZoomRedraw,
+          immediateZoomRedraw,
           motionPreservesSeed,
           pencilWiggles: pencilA !== pencilB,
           pencilRepeats: pencilB === pencilRepeat,
@@ -136,7 +130,7 @@ const { pathToFileURL } = require("node:url");
           rawIgnoresStyle,
           studies,
           referenceError: gl.getError(),
-          initialRendered: initial !== settled && settledSeed > seed,
+          initialRendered: initial !== settled && settledSeed === seed,
         };
       } finally {
         delete performance.now;
@@ -169,7 +163,7 @@ const { pathToFileURL } = require("node:url");
           name,
       );
       const state = await page.evaluate(() =>
-        document.getElementById("fractal-hatching").fractalDemo.getHeld(),
+        document.getElementById("fractal-hatching").fractalDemo.getState(),
       );
       assert.equal(state.scene, scene);
       assert.equal(state.outline, outline);

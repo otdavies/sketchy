@@ -8,8 +8,9 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node tests/browser.cjs && node tests/walking.cjs && node tests/perspective.cjs",
+    "test": "node tests/browser.cjs && node tests/walking.cjs && node tests/perspective.cjs && node tests/lighting.cjs",
     "test:shadows": "node tests/shadows.cjs",
+    "test:outlines": "node tests/outlines.cjs",
     "capture": "node scripts/capture.cjs"
   },
   "devDependencies": {

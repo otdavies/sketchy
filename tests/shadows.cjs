@@ -116,7 +116,7 @@ const { chromium } = require("playwright"),
                 ];
               c.draw(
                 {
-                  ...d.getHeld(),
+                  ...d.getState(),
                   view: 1,
                   zoom,
                   yaw,
