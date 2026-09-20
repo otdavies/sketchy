@@ -55,13 +55,24 @@ const { pathToFileURL } = require('node:url');
     // Pointer lock consumes relative movement. Headless Chromium can report zero
     // movementX/Y for Playwright's absolute mouse positions while locked. Keep
     // real capture/release, but provide a known relative event to test mouse-look.
-    await page.evaluate(() => document.dispatchEvent(new MouseEvent('mousemove', {
-      movementX: 50, movementY: 10, bubbles: true,
-    })));
+    const capturedLook = await page.evaluate(() => {
+      const demo = document.getElementById('fractal-hatching').fractalDemo;
+      // Sample one input atomically. Native pointer recentering can add events
+      // between protocol calls, and getState reports the last rendered pose.
+      demo.draw();
+      const before = demo.getState().walkPose;
+      document.dispatchEvent(new MouseEvent('mousemove', {
+        movementX: 50, movementY: 10, bubbles: true,
+      }));
+      demo.draw();
+      return { before, after: demo.getState().walkPose };
+    });
     await page.clock.runFor(120);
-    const capturedLook = (await state()).walkPose;
-    assert(Math.abs(capturedLook.yaw - 50 * .0035) < 1e-9);
-    assert(Math.abs(capturedLook.pitch - (initial.walkPose.pitch - 10 * .0035)) < 1e-9);
+    assert(Math.abs(capturedLook.after.yaw - capturedLook.before.yaw - 50 * .0035) < 1e-9,
+      JSON.stringify(capturedLook));
+    const expectedPitch = Math.max(-1.35, Math.min(1.35, capturedLook.before.pitch - 10 * .0035));
+    assert(Math.abs(capturedLook.after.pitch - expectedPitch) < 1e-9,
+      JSON.stringify(capturedLook));
     await page.keyboard.press('Escape');
     await page.clock.runFor(120);
     assert(await page.evaluate(() => document.pointerLockElement === null));
